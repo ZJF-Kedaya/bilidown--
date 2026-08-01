@@ -393,7 +393,7 @@ function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Cookie, Referer, Origin',
+    'Access-Control-Allow-Headers': 'Content-Type, Cookie, Referer, Origin, Range, X-Resolved-Url',
     'Access-Control-Allow-Credentials': 'true',
   };
 }
@@ -599,55 +599,71 @@ export default async function handler(request) {
       const cookie = url.searchParams.get('cookie') || '';
       const filename = url.searchParams.get('name') || 'video.mp4';
       const range = request.headers.get('Range'); // 支持 Range 分片请求
+      let resolvedUrl = request.headers.get('X-Resolved-Url'); // 前端提供的已解析 CDN URL
 
-      // 手动处理重定向，保留 Range / Referer 头到最终 CDN URL
+      // 请求 B站 URL 所需的 headers
       const anonCookie = await getAnonCookie();
       const cookieParts = [anonCookie];
       if (cookie) cookieParts.push(cookie);
-      const headers = {
+      const bilibiliHeaders = {
         ...API_HEADERS,
         'Referer': 'https://www.bilibili.com/',
         'Cookie': cookieParts.join('; '),
       };
-      if (range) headers['Range'] = range;
 
-      let resp = await fetch(targetUrl, {
-        headers: safeHeaders(headers),
-        redirect: 'manual',
-      });
+      // 如果没有已解析的 CDN URL，先通过 B站 URL 跟随重定向拿到最终 CDN URL
+      if (!resolvedUrl) {
+        const resolveFinalUrl = async () => {
+          let currentUrl = targetUrl;
+          let resp = await fetch(currentUrl, {
+            headers: safeHeaders(bilibiliHeaders),
+            redirect: 'manual',
+          });
+          let redirects = 0;
+          while (resp.status >= 300 && resp.status < 400 && redirects < 5) {
+            let loc = resp.headers.get('Location');
+            if (!loc) break;
+            if (loc.startsWith('/')) loc = new URL(loc, currentUrl).toString();
+            currentUrl = loc;
+            redirects++;
+            resp = await fetch(currentUrl, {
+              headers: safeHeaders(bilibiliHeaders),
+              redirect: 'manual',
+            });
+          }
+          return { resp, finalUrl: currentUrl };
+        };
 
-      // 跟随 301/302/307/308 重定向，最多 5 层
-      let redirects = 0;
-      while (resp.status >= 300 && resp.status < 400 && redirects < 5) {
-        let loc = resp.headers.get('Location');
-        if (!loc) break;
-        if (loc.startsWith('/')) loc = new URL(loc, targetUrl).toString();
-        redirects++;
-        resp = await fetch(loc, {
-          headers: safeHeaders(headers),
-          redirect: 'manual',
-        });
+        let { resp, finalUrl } = await resolveFinalUrl();
+        if (resp.status === 412) {
+          anonCookieCache = { cookie: '', update_time: 0 };
+          const freshCookie = await getAnonCookie();
+          bilibiliHeaders['Cookie'] = [freshCookie, cookie].filter(Boolean).join('; ');
+          ({ resp, finalUrl } = await resolveFinalUrl());
+        }
+        resolvedUrl = finalUrl;
       }
 
+      // 用最终 CDN URL 发 Range 请求（直接请求 CDN，避免每次重新走 B站重定向链）
+      const cdnHeaders = { ...API_HEADERS };
+      if (range) cdnHeaders['Range'] = range;
+      // CDN 通常需要 Referer，但不要 Cookie
+      cdnHeaders['Referer'] = 'https://www.bilibili.com/';
+
+      let resp = await fetch(resolvedUrl, {
+        headers: safeHeaders(cdnHeaders),
+        redirect: 'follow',
+      });
+
+      // 412 风控时刷新 Cookie 重试（针对最终 URL）
       if (resp.status === 412) {
         anonCookieCache = { cookie: '', update_time: 0 };
         const freshCookie = await getAnonCookie();
-        headers['Cookie'] = [freshCookie, cookie].filter(Boolean).join('; ');
-        resp = await fetch(targetUrl, {
-          headers: safeHeaders(headers),
-          redirect: 'manual',
+        cdnHeaders['Cookie'] = [freshCookie, cookie].filter(Boolean).join('; ');
+        resp = await fetch(resolvedUrl, {
+          headers: safeHeaders(cdnHeaders),
+          redirect: 'follow',
         });
-        redirects = 0;
-        while (resp.status >= 300 && resp.status < 400 && redirects < 5) {
-          let loc = resp.headers.get('Location');
-          if (!loc) break;
-          if (loc.startsWith('/')) loc = new URL(loc, targetUrl).toString();
-          redirects++;
-          resp = await fetch(loc, {
-            headers: safeHeaders(headers),
-            redirect: 'manual',
-          });
-        }
       }
 
       const respHeaders = {
@@ -656,6 +672,8 @@ export default async function handler(request) {
         'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
         'Accept-Ranges': 'bytes',
         'Cache-Control': 'public, max-age=3600',
+        'Access-Control-Expose-Headers': 'X-Resolved-Url, Content-Range',
+        'X-Resolved-Url': resolvedUrl,
       };
       const cl = resp.headers.get('Content-Length');
       if (cl) respHeaders['Content-Length'] = cl;

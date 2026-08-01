@@ -1450,14 +1450,22 @@ async function browserDownload(videoUrl, filename, progressEl) {
     updateDp(0, 0, 0, 0, 0);
     showProgress('正在获取文件信息...');
 
-    // 1. 发第一个分片请求，从 Content-Range 获取总大小，并验证服务器支持 Range
+    // 1. 发第一个分片请求，从 Content-Range 获取总大小，并缓存后端解析出的最终 CDN URL
     let totalSize = 0;
     let firstChunk = null;
+    let resolvedUrl = null;
     let serverSupportsRange = false;
+    const makeRangeHeaders = (start, end, resolved) => {
+        const h = { 'Range': `bytes=${start}-${end}` };
+        if (resolved) h['X-Resolved-Url'] = resolved;
+        return h;
+    };
+
     try {
         const firstResp = await fetch(downloadUrl, {
-            headers: { 'Range': `bytes=0-${CHUNK - 1}` }
+            headers: makeRangeHeaders(0, CHUNK - 1)
         });
+        resolvedUrl = firstResp.headers.get('X-Resolved-Url');
         if (firstResp.status === 206) {
             serverSupportsRange = true;
             const cr = firstResp.headers.get('Content-Range');
@@ -1529,7 +1537,7 @@ async function browserDownload(videoUrl, filename, progressEl) {
     }
     firstChunk = null;
 
-    // 4. 继续拉取剩余分片
+    // 4. 继续拉取剩余分片（全部使用同一个 resolved CDN URL）
     const totalChunks = Math.ceil(totalSize / CHUNK);
     const startTime = Date.now();
     updateDp(downloaded, totalSize, 1, totalChunks, 0);
@@ -1539,7 +1547,7 @@ async function browserDownload(videoUrl, filename, progressEl) {
         const end = Math.min(start + CHUNK - 1, totalSize - 1);
 
         const resp = await fetch(downloadUrl, {
-            headers: { 'Range': `bytes=${start}-${end}` }
+            headers: makeRangeHeaders(start, end, resolvedUrl)
         });
         if (resp.status !== 206) {
             throw new Error(`分片 ${i + 1} 失败: HTTP ${resp.status}（服务器未返回 206 Partial Content）`);
