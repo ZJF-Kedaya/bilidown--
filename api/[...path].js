@@ -360,6 +360,7 @@ function md5(string) {
 async function proxyFetch(url, extraCookie, options = {}) {
   const headers = { ...API_HEADERS };
   if (options.referer) headers['Referer'] = options.referer;
+  if (options.range) headers['Range'] = options.range;
 
   const anonCookie = await getAnonCookie();
   const cookieParts = [anonCookie];
@@ -376,6 +377,7 @@ async function proxyFetch(url, extraCookie, options = {}) {
     const freshCookie = await getAnonCookie();
     const retryHeaders = { ...API_HEADERS };
     if (options.referer) retryHeaders['Referer'] = options.referer;
+    if (options.range) retryHeaders['Range'] = options.range;
     retryHeaders['Cookie'] = [freshCookie, extraCookie].filter(Boolean).join('; ');
     await new Promise(r => setTimeout(r, 300));
     resp = await fetch(url, {
@@ -596,40 +598,20 @@ export default async function handler(request) {
       if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
       const cookie = url.searchParams.get('cookie') || '';
       const filename = url.searchParams.get('name') || 'video.mp4';
+      const range = request.headers.get('Range'); // 支持 Range 分片请求
 
-      // Vercel Edge Function 响应大小有限制（约 4.5 MB 流式），
-      // 大文件请改用"复制链接"模式由浏览器/IDM 直接拉取
-      try {
-        const anonCookie = await getAnonCookie();
-        const headHeaders = { ...API_HEADERS };
-        const cookieParts = [anonCookie];
-        if (cookie) cookieParts.push(cookie);
-        headHeaders['Cookie'] = cookieParts.join('; ');
-        headHeaders['Referer'] = 'https://www.bilibili.com/';
-        const headResp = await fetch(targetUrl, {
-          method: 'HEAD',
-          headers: safeHeaders(headHeaders),
-          redirect: 'follow'
-        });
-        const contentLength = parseInt(headResp.headers.get('Content-Length') || '0');
-        if (contentLength > 50 * 1024 * 1024) {
-          return jsonResponse({
-            code: 413,
-            message: `文件过大(${(contentLength / 1024 / 1024).toFixed(1)}MB)，Vercel Edge 单次响应上限约4.5MB。请切换为"复制链接"模式用IDM/迅雷下载`,
-            url: targetUrl
-          }, 413);
-        }
-      } catch (e) { /* HEAD失败不影响下载 */ }
-
-      const resp = await proxyFetch(targetUrl, cookie, { referer: 'https://www.bilibili.com/' });
+      const resp = await proxyFetch(targetUrl, cookie, { referer: 'https://www.bilibili.com/', range });
       const respHeaders = {
         ...corsHeaders(),
         'Content-Type': resp.headers.get('Content-Type') || 'video/mp4',
         'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
         'Accept-Ranges': 'bytes',
+        'Cache-Control': 'public, max-age=3600',
       };
       const cl = resp.headers.get('Content-Length');
       if (cl) respHeaders['Content-Length'] = cl;
+      const cr = resp.headers.get('Content-Range');
+      if (cr) respHeaders['Content-Range'] = cr;
       const lm = resp.headers.get('Last-Modified');
       if (lm) respHeaders['Last-Modified'] = lm;
       const et = resp.headers.get('ETag');
