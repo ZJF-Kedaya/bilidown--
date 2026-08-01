@@ -1,11 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "version": 2,
-  "public": false,
-  "github": {
-    "enabled": false,
-    "silent": true
-  },
   "cleanUrls": true,
   "trailingSlash": false,
   "rewrites": [
@@ -15,11 +9,5 @@
     { "source": "/up", "destination": "/api/up" },
     { "source": "/season", "destination": "/api/season" },
     { "source": "/download", "destination": "/api/download" }
-  ],
-  "functions": {
-    "api/[...path].js": {
-      "memory": 128,
-      "maxDuration": 30
-    }
-  }
+  ]
 }
