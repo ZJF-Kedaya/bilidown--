@@ -376,6 +376,25 @@
         </div>
     </div>
 
+    <!-- 全局下载进度条 -->
+    <div id="downloadProgress" style="display:none;position:fixed;bottom:20px;right:20px;width:340px;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;box-shadow:0 8px 24px rgba(0,0,0,0.3);z-index:9999;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span id="dpTitle" style="font-size:13px;font-weight:600;color:var(--text);max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">下载中</span>
+            <span id="dpPercent" style="font-size:13px;font-weight:700;color:var(--accent);">0%</span>
+        </div>
+        <div style="background:var(--bg);border-radius:6px;height:8px;overflow:hidden;margin-bottom:8px;">
+            <div id="dpBar" style="background:linear-gradient(90deg,var(--accent),var(--accent-hover));height:100%;width:0%;transition:width 0.3s ease;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary);">
+            <span id="dpSize">0 MB / 0 MB</span>
+            <span id="dpSpeed">0 MB/s</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:11px;color:var(--text-secondary);">
+            <span id="dpChunk">分片 0/0</span>
+            <span id="dpTime">剩余 --</span>
+        </div>
+    </div>
+
     <!-- UP主主页解析 -->
     <div class="input-section" id="tab-up" style="display:none;">
         <h2>UP主主页视频解析</h2>
@@ -1320,13 +1339,45 @@ function buildDownloadProxyUrl(videoUrl, filename) {
 // 每片 4MB，绕过 Vercel Edge 4.5MB 单次响应限制
 async function browserDownload(videoUrl, filename, progressEl) {
     const CHUNK = 4 * 1024 * 1024; // 4MB per chunk
-    const showProgress = (msg) => {
-        if (progressEl) progressEl.textContent = msg;
-        else showToast(msg, 'info');
+
+    // 进度条控制
+    const dp = {
+        el: document.getElementById('downloadProgress'),
+        title: document.getElementById('dpTitle'),
+        percent: document.getElementById('dpPercent'),
+        bar: document.getElementById('dpBar'),
+        size: document.getElementById('dpSize'),
+        speed: document.getElementById('dpSpeed'),
+        chunk: document.getElementById('dpChunk'),
+        time: document.getElementById('dpTime'),
+    };
+    const showProgress = (msg) => { if (progressEl) progressEl.textContent = msg; };
+    const fmtMB = (b) => (b / 1024 / 1024).toFixed(1);
+    const fmtTime = (s) => {
+        if (s < 0 || !isFinite(s)) return '--';
+        if (s < 60) return `${s.toFixed(0)}秒`;
+        return `${Math.floor(s / 60)}分${(s % 60).toFixed(0)}秒`;
+    };
+    const showDp = (visible) => { if (dp.el) dp.el.style.display = visible ? 'block' : 'none'; };
+    const updateDp = (downloaded, total, chunkIdx, chunkTotal, elapsedMs) => {
+        if (!dp.el) return;
+        const pct = total > 0 ? (downloaded / total * 100) : 0;
+        dp.bar.style.width = pct + '%';
+        dp.percent.textContent = pct.toFixed(1) + '%';
+        dp.size.textContent = `${fmtMB(downloaded)} / ${fmtMB(total)} MB`;
+        const speed = elapsedMs > 0 ? (downloaded / 1024 / 1024 / (elapsedMs / 1000)) : 0;
+        dp.speed.textContent = `${speed.toFixed(2)} MB/s`;
+        dp.chunk.textContent = `分片 ${chunkIdx}/${chunkTotal}`;
+        const remain = speed > 0 ? (total - downloaded) / 1024 / 1024 / speed : -1;
+        dp.time.textContent = `剩余 ${fmtTime(remain)}`;
     };
 
     // 1. HEAD 请求获取文件大小
     showProgress('正在获取文件信息...');
+    if (dp.title) dp.title.textContent = filename;
+    showDp(true);
+    updateDp(0, 0, 0, 0, 0);
+
     const headUrl = buildDownloadProxyUrl(videoUrl, filename);
     let totalSize = 0;
     try {
@@ -1336,6 +1387,7 @@ async function browserDownload(videoUrl, filename, progressEl) {
 
     // 小文件直接下载（< 4MB）
     if (!totalSize || totalSize <= CHUNK) {
+        showDp(false);
         showProgress('文件较小，直接下载...');
         const a = document.createElement('a');
         a.href = headUrl;
@@ -1347,10 +1399,9 @@ async function browserDownload(videoUrl, filename, progressEl) {
     }
 
     // 2. 大文件：分片下载
-    // 优先用 File System Access API（Chrome/Edge），否则降级到 Blob
     const supportsFSAccess = 'showSaveFilePicker' in window;
     let writable = null, fileHandle = null, blobParts = [];
-    const totalMB = (totalSize / 1024 / 1024).toFixed(1);
+    const totalMB = fmtMB(totalSize);
 
     if (supportsFSAccess) {
         try {
@@ -1361,17 +1412,18 @@ async function browserDownload(videoUrl, filename, progressEl) {
             });
             writable = await fileHandle.createWritable();
         } catch (e) {
-            if (e.name === 'AbortError') { showProgress('已取消'); return; }
+            if (e.name === 'AbortError') { showDp(false); showProgress('已取消'); return; }
             // 用户拒绝或不支持，降级到 Blob
         }
     }
 
     // 3. 分片拉取
     const totalChunks = Math.ceil(totalSize / CHUNK);
+    let downloaded = 0;
+    const startTime = Date.now();
     for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK;
         const end = Math.min(start + CHUNK - 1, totalSize - 1);
-        showProgress(`下载中 ${i + 1}/${totalChunks} (${((i + 1) / totalChunks * 100).toFixed(0)}% · ${totalMB}MB)`);
 
         const resp = await fetch(headUrl, {
             headers: { 'Range': `bytes=${start}-${end}` }
@@ -1385,15 +1437,16 @@ async function browserDownload(videoUrl, filename, progressEl) {
         } else {
             blobParts.push(buf);
         }
+        downloaded += buf.byteLength;
+        const elapsed = Date.now() - startTime;
+        updateDp(downloaded, totalSize, i + 1, totalChunks, elapsed);
     }
 
     // 4. 收尾
     if (writable) {
         await writable.close();
-        showProgress(`下载完成: ${filename} (${totalMB}MB)`);
     } else {
         // Blob 降级：一次性下载（注意内存占用）
-        showProgress('正在合并文件...');
         const blob = new Blob(blobParts, { type: 'video/mp4' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1403,8 +1456,12 @@ async function browserDownload(videoUrl, filename, progressEl) {
         a.click();
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 10000);
-        showProgress(`下载完成: ${filename} (${totalMB}MB)`);
     }
+    if (dp.bar) dp.bar.style.width = '100%';
+    if (dp.percent) dp.percent.textContent = '100%';
+    if (dp.time) dp.time.textContent = '完成';
+    showToast(`下载完成: ${filename} (${totalMB}MB)`, 'success');
+    setTimeout(() => showDp(false), 2000);
 }
 
 // 下载路径设置提示
@@ -1447,6 +1504,8 @@ async function downloadVideo(encodedUrl, encodedTitle) {
     try {
         await browserDownload(url, title + '.mp4');
     } catch (e) {
+        const dp = document.getElementById('downloadProgress');
+        if (dp) dp.style.display = 'none';
         showToast(`下载失败: ${e.message}`, 'error');
     }
 }
@@ -1473,6 +1532,8 @@ async function downloadDashStream(encodedUrl, encodedTitle) {
     try {
         await browserDownload(url, title);
     } catch (e) {
+        const dp = document.getElementById('downloadProgress');
+        if (dp) dp.style.display = 'none';
         showToast(`下载失败: ${e.message}`, 'error');
     }
 }
