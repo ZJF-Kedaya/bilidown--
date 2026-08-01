@@ -367,11 +367,16 @@
             </div>
             <div class="setting-item">
                 <label>后端：</label>
-                <select id="proxySelect">
+                <select id="proxySelect" onchange="onBackendChange()">
                     <option value="vercel" selected>Vercel 同源后端</option>
+                    <option value="cf">Cloudflare Worker</option>
                 </select>
-                <button class="btn btn-sm" onclick="testVercel()" style="font-size:11px;padding:2px 8px;margin-left:6px;">测试</button>
+                <button class="btn btn-sm" onclick="testBackend()" style="font-size:11px;padding:2px 8px;margin-left:6px;">测试</button>
                 <span id="vercelTestResult" style="font-size:11px;margin-left:6px;color:var(--text-secondary);"></span>
+            </div>
+            <div class="setting-item" id="cfWorkerRow" style="display:none;">
+                <label>Worker URL：</label>
+                <input type="text" id="cfWorkerUrl" placeholder="https://your-worker.workers.dev" style="width:220px;font-size:12px;">
             </div>
         </div>
     </div>
@@ -588,22 +593,29 @@ function showToast(msg, type = 'info') {
     }, 4000);
 }
 
-function getProxy() { return 'vercel'; }
+function getProxy() { return document.getElementById('proxySelect')?.value || 'vercel'; }
 function getQuality() { return parseInt(document.getElementById('qualitySelect').value); }
 function getFormat() { return document.getElementById('formatSelect').value; }
 
-// 同源 Vercel 后端测试
-async function testVercel() {
+// 后端测试（Vercel 同源 / CF Worker 通用）
+async function testBackend() {
     const resultEl = document.getElementById('vercelTestResult');
+    const backend = getProxy();
+    if (backend === 'cf') {
+        const cfUrl = document.getElementById('cfWorkerUrl').value.trim();
+        if (!cfUrl) { showToast('请填写 Worker URL', 'error'); return; }
+        if (!/^https?:\/\//.test(cfUrl)) { showToast('Worker URL 需以 http(s):// 开头', 'error'); return; }
+    }
     resultEl.style.color = 'var(--text-secondary)';
     resultEl.textContent = '测试中...';
     try {
-        const resp = await fetch('/api/health', { signal: AbortSignal.timeout(8000) });
+        const healthUrl = `${backendPath('/health')}`;
+        const resp = await fetch(healthUrl, { signal: AbortSignal.timeout(8000) });
         const data = await resp.json();
         if (data.status === 'ok') {
             resultEl.style.color = 'var(--success)';
             resultEl.textContent = `后端正常 · WBI:${data.wbi ? '✓' : '✗'} · Cookie:${data.hasAnonCookie ? '✓' : '✗'}`;
-            showToast('Vercel 后端正常', 'success');
+            showToast(`${backend === 'cf' ? 'CF Worker' : 'Vercel'} 后端正常`, 'success');
         } else {
             resultEl.style.color = 'var(--error)';
             resultEl.textContent = '后端异常';
@@ -615,14 +627,33 @@ async function testVercel() {
     }
 }
 
-// 构建同源后端请求URL
+// 后端切换：显示/隐藏 CF Worker URL 输入框
+function onBackendChange() {
+    const backend = document.getElementById('proxySelect').value;
+    document.getElementById('cfWorkerRow').style.display = backend === 'cf' ? '' : 'none';
+}
+
+// 获取当前后端基础路径（不含查询参数）
+// Vercel 同源: /api/api, /api/up, /api/download 等
+// CF Worker:   https://xxx.workers.dev/api, /up, /download 等
+function backendPath(path) {
+    const backend = document.getElementById('proxySelect')?.value || 'vercel';
+    if (backend === 'cf') {
+        const cfUrl = (document.getElementById('cfWorkerUrl')?.value || '').trim().replace(/\/+$/, '');
+        return `${cfUrl}${path}`;
+    }
+    // Vercel 同源：/api 前缀
+    return `/api${path}`;
+}
+
+// 构建后端请求URL（通用 API 代理）
 function buildProxyUrl(targetUrl) {
-    let url = `/api/api?url=${encodeURIComponent(targetUrl)}`;
+    let url = `${backendPath('/api')}?url=${encodeURIComponent(targetUrl)}`;
     if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
     return url;
 }
 
-// 统一的 fetch（同源 Vercel 后端，无 CORS 问题）
+// 统一的 fetch（通过后端代理，自动 WBI 签名）
 async function fetchWithProxy(url) {
     return await doFetch(buildProxyUrl(url), 15000);
 }
@@ -727,8 +758,7 @@ async function getDashPlayUrl(bvid, cid, qn) {
 
 // ==================== API: UP主视频列表 ====================
 async function getUpVideos(mid, pn, ps, order) {
-    // 同源 Vercel 后端的 /api/up 接口，自动 WBI 签名
-    let url = `/api/up?mid=${mid}&pn=${pn}&ps=${ps}&order=${order}`;
+    let url = `${backendPath('/up')}?mid=${mid}&pn=${pn}&ps=${ps}&order=${order}`;
     if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
     const data = await doFetch(url, 15000);
     if (data.code !== 0) throw new Error(data.message || '获取UP主视频列表失败');
@@ -737,7 +767,7 @@ async function getUpVideos(mid, pn, ps, order) {
 
 // ==================== API: 合集视频列表 ====================
 async function getSeasonVideos(mid, seasonId, pageNum, pageSize) {
-    let url = `/api/season?mid=${mid}&season_id=${seasonId}&page_num=${pageNum}&page_size=${pageSize}`;
+    let url = `${backendPath('/season')}?mid=${mid}&season_id=${seasonId}&page_num=${pageNum}&page_size=${pageSize}`;
     if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
     const data = await doFetch(url, 15000);
     if (data.code !== 0) throw new Error(data.message || '获取合集视频失败');
@@ -745,7 +775,7 @@ async function getSeasonVideos(mid, seasonId, pageNum, pageSize) {
 }
 
 async function getSeriesVideos(mid, seriesId, pageNum, pageSize) {
-    let url = `/api/season?mid=${mid}&series_id=${seriesId}&page_num=${pageNum}&page_size=${pageSize}`;
+    let url = `${backendPath('/season')}?mid=${mid}&series_id=${seriesId}&page_num=${pageNum}&page_size=${pageSize}`;
     if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
     const data = await doFetch(url, 15000);
     if (data.code !== 0) throw new Error(data.message || '获取列表视频失败');
@@ -771,7 +801,11 @@ async function startParse() {
     const seen = new Set();
     const uniqueIds = videoIds.filter(v => { const k = v.type+v.id; if (seen.has(k)) return false; seen.add(k); return true; });
 
+    // 清除上一次的解析结果
     parsedVideos = [];
+    const resultsList = document.getElementById('resultsList');
+    if (resultsList) resultsList.innerHTML = '';
+
     await parseVideoList(uniqueIds.map(v => ({ bvid: v.type === 'bvid' ? v.id : null, avid: v.type === 'avid' ? v.id : null })));
 }
 
@@ -813,9 +847,10 @@ async function parseVideoList(videoList) {
             else info = await getVideoInfoByAid(v.avid);
 
             const bvid = info.bvid, cid = info.cid, qn = getQuality();
-            let playData = null, dashData = null;
+            let playData = null, dashData = null, parseError = null;
             try { playData = await getPlayUrl(bvid, cid, qn); } catch (e) {
-                if (qn > 32) { try { playData = await getPlayUrl(bvid, cid, 16); } catch(e2) {} }
+                parseError = e.message;
+                if (qn > 32) { try { playData = await getPlayUrl(bvid, cid, 16); parseError = null; } catch(e2) { parseError = `${e.message}（降级也失败: ${e2.message}）`; } }
             }
             if (getFormat() === 'dash') {
                 try { dashData = await getDashPlayUrl(bvid, cid, qn); } catch (e) {
@@ -827,7 +862,7 @@ async function parseVideoList(videoList) {
                 index: idx, bvid, avid: info.aid, title: info.title,
                 cover: info.pic, owner: info.owner, stat: info.stat,
                 duration: info.duration, pages: info.pages, pubdate: info.pubdate,
-                playData, dashData
+                playData, dashData, parseError
             };
             parsedVideos.push(videoInfo);
             successCount++;
@@ -1205,9 +1240,9 @@ function updateCard(id, info) {
     const card = document.getElementById(id);
     if (!card) return;
     card.className = 'video-card video-card-success';
-    // 封面：通过同源后端转发绕过防盗链
+    // 封面：通过后端转发绕过防盗链
     const rawCover = info.cover.startsWith('//') ? 'https:'+info.cover : info.cover;
-    const coverUrl = rawCover ? `/api/api?url=${encodeURIComponent(rawCover)}` : '';
+    const coverUrl = rawCover ? `${backendPath('/api')}?url=${encodeURIComponent(rawCover)}` : '';
     const pubTime = info.pubdate ? new Date(info.pubdate*1000).toLocaleDateString('zh-CN') : '';
 
     let pagesHtml = '';
@@ -1258,7 +1293,8 @@ function updateCard(id, info) {
     }
 
     if (!info.playData && !info.dashData) {
-        downloadHtml = `<div class="error-msg">无法获取播放地址。可能原因：未设置Cookie / 版权内容 / 代理异常</div>
+        const errMsg = info.parseError ? `无法获取播放地址：${info.parseError}` : '无法获取播放地址。可能原因：未设置Cookie / 版权内容 / 代理异常';
+        downloadHtml = `<div class="error-msg">${errMsg}</div>
         <div class="download-btns">
             <button class="btn btn-outline btn-sm" onclick="retryParse('${info.bvid}')">重试</button>
             <button class="btn btn-outline btn-sm" onclick="retryParseWithLowerQuality(${info.index})">降低清晰度</button>
@@ -1299,21 +1335,57 @@ function updateCardError(id, videoId, errorMsg) {
 async function changePage(index, cid) {
     if (!parsedVideos[index]) return;
     const info = parsedVideos[index];
-    try { info.playData = await getPlayUrl(info.bvid, cid, getQuality()); } catch(e) { info.playData = null; }
-    if (getFormat() === 'dash') { try { info.dashData = await getDashPlayUrl(info.bvid, cid, getQuality()); } catch(e) { info.dashData = null; } }
+    const card = document.getElementById(`card-${index}`);
+    if (card) card.querySelector('.video-info').insertAdjacentHTML('afterbegin', '<div class="loading-msg" style="color:var(--accent);">切换中...</div>');
+    try {
+        info.playData = await getPlayUrl(info.bvid, cid, getQuality());
+    } catch(e) {
+        info.playData = null;
+        info.parseError = e.message;
+    }
+    if (getFormat() === 'dash') {
+        try { info.dashData = await getDashPlayUrl(info.bvid, cid, getQuality()); } catch(e) { info.dashData = null; }
+    }
     updateCard(`card-${index}`, info);
 }
 async function reParse(index, qn) {
     if (!parsedVideos[index]) return;
     const info = parsedVideos[index];
-    try { info.playData = await getPlayUrl(info.bvid, info.cid, qn); } catch(e) { info.playData = null; }
-    try { info.dashData = await getDashPlayUrl(info.bvid, info.cid, qn); } catch(e) { info.dashData = null; }
+    // 显示加载状态
+    const card = document.getElementById(`card-${index}`);
+    if (card) {
+        const tags = card.querySelector('.quality-tags');
+        if (tags) tags.insertAdjacentHTML('beforebegin', '<div class="loading-msg" style="color:var(--accent);margin-top:4px;">正在请求 ' + qn + 'P...</div>');
+    }
+    // 切换清晰度时加 500ms 延迟，避免频繁请求触发风控
+    await new Promise(r => setTimeout(r, 500));
+    try {
+        info.playData = await getPlayUrl(info.bvid, info.cid, qn);
+        info.parseError = null;
+    } catch(e) {
+        info.playData = null;
+        info.parseError = e.message;
+        // 如果请求的清晰度失败，尝试降级到 360P
+        if (qn > 16) {
+            try {
+                await new Promise(r => setTimeout(r, 800));
+                info.playData = await getPlayUrl(info.bvid, info.cid, 16);
+                info.parseError = null;
+                showToast(`请求 ${qn}P 失败，已降级到 360P: ${e.message}`, 'warning');
+            } catch(e2) {
+                info.parseError = `${e.message}（降级也失败: ${e2.message}）`;
+            }
+        }
+    }
+    if (getFormat() === 'dash') {
+        try { info.dashData = await getDashPlayUrl(info.bvid, info.cid, qn); } catch(e) { info.dashData = null; }
+    }
     updateCard(`card-${index}`, info);
 }
 async function retryParseWithLowerQuality(index) {
     if (!parsedVideos[index]) return;
     const info = parsedVideos[index];
-    try { info.playData = await getPlayUrl(info.bvid, info.cid, 16); } catch(e) { info.playData = null; }
+    try { info.playData = await getPlayUrl(info.bvid, info.cid, 16); info.parseError = null; } catch(e) { info.playData = null; info.parseError = e.message; }
     updateCard(`card-${index}`, info);
 }
 function retryParse(videoId) {
@@ -1328,9 +1400,9 @@ function retryParse(videoId) {
 
 function getDownloadMode() { return document.getElementById('downloadMode').value; }
 
-// 构建同源下载 URL（通过 Vercel 后端转发，自动加 Referer）
+// 构建下载 URL（通过后端转发，自动加 Referer）
 function buildDownloadProxyUrl(videoUrl, filename) {
-    let url = `/api/download?url=${encodeURIComponent(videoUrl)}&name=${encodeURIComponent(filename)}`;
+    let url = `${backendPath('/download')}?url=${encodeURIComponent(videoUrl)}&name=${encodeURIComponent(filename)}`;
     if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
     return url;
 }
@@ -1364,33 +1436,44 @@ async function browserDownload(videoUrl, filename, progressEl) {
         const pct = total > 0 ? (downloaded / total * 100) : 0;
         dp.bar.style.width = pct + '%';
         dp.percent.textContent = pct.toFixed(1) + '%';
-        dp.size.textContent = `${fmtMB(downloaded)} / ${fmtMB(total)} MB`;
+        dp.size.textContent = total > 0 ? `${fmtMB(downloaded)} / ${fmtMB(total)} MB` : `${fmtMB(downloaded)} MB`;
         const speed = elapsedMs > 0 ? (downloaded / 1024 / 1024 / (elapsedMs / 1000)) : 0;
         dp.speed.textContent = `${speed.toFixed(2)} MB/s`;
-        dp.chunk.textContent = `分片 ${chunkIdx}/${chunkTotal}`;
-        const remain = speed > 0 ? (total - downloaded) / 1024 / 1024 / speed : -1;
-        dp.time.textContent = `剩余 ${fmtTime(remain)}`;
+        dp.chunk.textContent = chunkTotal > 0 ? `分片 ${chunkIdx}/${chunkTotal}` : '流式下载';
+        const remain = speed > 0 && total > 0 ? (total - downloaded) / 1024 / 1024 / speed : -1;
+        dp.time.textContent = total > 0 ? `剩余 ${fmtTime(remain)}` : '未知大小';
     };
 
-    // 1. HEAD 请求获取文件大小
-    showProgress('正在获取文件信息...');
+    const downloadUrl = buildDownloadProxyUrl(videoUrl, filename);
     if (dp.title) dp.title.textContent = filename;
     showDp(true);
     updateDp(0, 0, 0, 0, 0);
+    showProgress('正在获取文件信息...');
 
-    const headUrl = buildDownloadProxyUrl(videoUrl, filename);
+    // 1. 发第一个分片请求，从 Content-Range 获取总大小（不用 HEAD，更可靠）
     let totalSize = 0;
+    let firstChunkBuf = null;
     try {
-        const headResp = await fetch(headUrl, { method: 'HEAD' });
-        totalSize = parseInt(headResp.headers.get('Content-Length') || '0');
-    } catch (e) { /* 忽略，走单次下载 */ }
-
-    // 小文件直接下载（< 4MB）
-    if (!totalSize || totalSize <= CHUNK) {
+        const firstResp = await fetch(downloadUrl, {
+            headers: { 'Range': `bytes=0-${CHUNK - 1}` }
+        });
+        // 从 Content-Range: bytes 0-4194303/12345678 解析总大小
+        const cr = firstResp.headers.get('Content-Range');
+        if (cr) {
+            const m = cr.match(/\/(\d+)/);
+            if (m) totalSize = parseInt(m[1]);
+        }
+        // 没有 Content-Range 时，用 Content-Length（说明服务器不支持 Range）
+        if (!totalSize) {
+            totalSize = parseInt(firstResp.headers.get('Content-Length') || '0');
+        }
+        firstChunkBuf = await firstResp.arrayBuffer();
+    } catch (e) {
+        // 第一片失败，降级为直接下载
         showDp(false);
-        showProgress('文件较小，直接下载...');
+        showProgress('直接下载...');
         const a = document.createElement('a');
-        a.href = headUrl;
+        a.href = downloadUrl;
         a.download = filename;
         document.body.appendChild(a);
         a.click();
@@ -1398,15 +1481,32 @@ async function browserDownload(videoUrl, filename, progressEl) {
         return;
     }
 
-    // 2. 大文件：分片下载
+    // 服务器不支持 Range（返回 200 而非 206，或只有一片数据）
+    if (firstChunkBuf.byteLength >= totalSize && totalSize <= CHUNK) {
+        // 小文件或不支持 Range，直接用已获取的数据
+        showDp(false);
+        const blob = new Blob([firstChunkBuf], { type: 'video/mp4' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        showToast(`下载完成: ${filename} (${fmtMB(firstChunkBuf.byteLength)}MB)`, 'success');
+        return;
+    }
+
+    // 2. 大文件分片下载
     const supportsFSAccess = 'showSaveFilePicker' in window;
-    let writable = null, fileHandle = null, blobParts = [];
+    let writable = null, blobParts = [];
     const totalMB = fmtMB(totalSize);
 
     if (supportsFSAccess) {
         try {
             const ext = filename.match(/\.[^.]+$/)?.[0] || '.mp4';
-            fileHandle = await window.showSaveFilePicker({
+            const fileHandle = await window.showSaveFilePicker({
                 suggestedName: filename,
                 types: [{ description: '视频', accept: { 'video/mp4': [ext] } }]
             });
@@ -1417,15 +1517,25 @@ async function browserDownload(videoUrl, filename, progressEl) {
         }
     }
 
-    // 3. 分片拉取
+    // 3. 写入第一片数据
+    let downloaded = firstChunkBuf.byteLength;
+    if (writable) {
+        await writable.write(firstChunkBuf);
+    } else {
+        blobParts.push(firstChunkBuf);
+    }
+    firstChunkBuf = null; // 释放内存
+
+    // 4. 继续拉取剩余分片
     const totalChunks = Math.ceil(totalSize / CHUNK);
-    let downloaded = 0;
     const startTime = Date.now();
-    for (let i = 0; i < totalChunks; i++) {
+    updateDp(downloaded, totalSize, 1, totalChunks, 0);
+
+    for (let i = 1; i < totalChunks; i++) {
         const start = i * CHUNK;
         const end = Math.min(start + CHUNK - 1, totalSize - 1);
 
-        const resp = await fetch(headUrl, {
+        const resp = await fetch(downloadUrl, {
             headers: { 'Range': `bytes=${start}-${end}` }
         });
         if (!resp.ok && resp.status !== 206) {
@@ -1442,11 +1552,10 @@ async function browserDownload(videoUrl, filename, progressEl) {
         updateDp(downloaded, totalSize, i + 1, totalChunks, elapsed);
     }
 
-    // 4. 收尾
+    // 5. 收尾
     if (writable) {
         await writable.close();
     } else {
-        // Blob 降级：一次性下载（注意内存占用）
         const blob = new Blob(blobParts, { type: 'video/mp4' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
