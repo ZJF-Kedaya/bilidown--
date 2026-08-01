@@ -600,7 +600,56 @@ export default async function handler(request) {
       const filename = url.searchParams.get('name') || 'video.mp4';
       const range = request.headers.get('Range'); // 支持 Range 分片请求
 
-      const resp = await proxyFetch(targetUrl, cookie, { referer: 'https://www.bilibili.com/', range });
+      // 手动处理重定向，保留 Range / Referer 头到最终 CDN URL
+      const anonCookie = await getAnonCookie();
+      const cookieParts = [anonCookie];
+      if (cookie) cookieParts.push(cookie);
+      const headers = {
+        ...API_HEADERS,
+        'Referer': 'https://www.bilibili.com/',
+        'Cookie': cookieParts.join('; '),
+      };
+      if (range) headers['Range'] = range;
+
+      let resp = await fetch(targetUrl, {
+        headers: safeHeaders(headers),
+        redirect: 'manual',
+      });
+
+      // 跟随 301/302/307/308 重定向，最多 5 层
+      let redirects = 0;
+      while (resp.status >= 300 && resp.status < 400 && redirects < 5) {
+        let loc = resp.headers.get('Location');
+        if (!loc) break;
+        if (loc.startsWith('/')) loc = new URL(loc, targetUrl).toString();
+        redirects++;
+        resp = await fetch(loc, {
+          headers: safeHeaders(headers),
+          redirect: 'manual',
+        });
+      }
+
+      if (resp.status === 412) {
+        anonCookieCache = { cookie: '', update_time: 0 };
+        const freshCookie = await getAnonCookie();
+        headers['Cookie'] = [freshCookie, cookie].filter(Boolean).join('; ');
+        resp = await fetch(targetUrl, {
+          headers: safeHeaders(headers),
+          redirect: 'manual',
+        });
+        redirects = 0;
+        while (resp.status >= 300 && resp.status < 400 && redirects < 5) {
+          let loc = resp.headers.get('Location');
+          if (!loc) break;
+          if (loc.startsWith('/')) loc = new URL(loc, targetUrl).toString();
+          redirects++;
+          resp = await fetch(loc, {
+            headers: safeHeaders(headers),
+            redirect: 'manual',
+          });
+        }
+      }
+
       const respHeaders = {
         ...corsHeaders(),
         'Content-Type': resp.headers.get('Content-Type') || 'video/mp4',

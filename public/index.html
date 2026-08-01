@@ -1450,24 +1450,39 @@ async function browserDownload(videoUrl, filename, progressEl) {
     updateDp(0, 0, 0, 0, 0);
     showProgress('正在获取文件信息...');
 
-    // 1. 发第一个分片请求，从 Content-Range 获取总大小（不用 HEAD，更可靠）
+    // 1. 发第一个分片请求，从 Content-Range 获取总大小，并验证服务器支持 Range
     let totalSize = 0;
-    let firstChunkBuf = null;
+    let firstChunk = null;
+    let serverSupportsRange = false;
     try {
         const firstResp = await fetch(downloadUrl, {
             headers: { 'Range': `bytes=0-${CHUNK - 1}` }
         });
-        // 从 Content-Range: bytes 0-4194303/12345678 解析总大小
-        const cr = firstResp.headers.get('Content-Range');
-        if (cr) {
-            const m = cr.match(/\/(\d+)/);
-            if (m) totalSize = parseInt(m[1]);
+        if (firstResp.status === 206) {
+            serverSupportsRange = true;
+            const cr = firstResp.headers.get('Content-Range');
+            if (cr) {
+                const m = cr.match(/\/(\d+)/);
+                if (m) totalSize = parseInt(m[1]);
+            }
+        } else if (firstResp.status === 200) {
+            // 服务器忽略 Range，返回完整文件；直接走单文件下载
+            const blob = await firstResp.blob();
+            showDp(false);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+            showToast(`下载完成: ${filename} (${fmtMB(blob.size)}MB)`, 'success');
+            return;
+        } else {
+            throw new Error(`首片请求失败: HTTP ${firstResp.status}`);
         }
-        // 没有 Content-Range 时，用 Content-Length（说明服务器不支持 Range）
-        if (!totalSize) {
-            totalSize = parseInt(firstResp.headers.get('Content-Length') || '0');
-        }
-        firstChunkBuf = await firstResp.arrayBuffer();
+        firstChunk = { start: 0, buf: await firstResp.arrayBuffer() };
     } catch (e) {
         // 第一片失败，降级为直接下载
         showDp(false);
@@ -1481,26 +1496,14 @@ async function browserDownload(videoUrl, filename, progressEl) {
         return;
     }
 
-    // 服务器不支持 Range（返回 200 而非 206，或只有一片数据）
-    if (firstChunkBuf.byteLength >= totalSize && totalSize <= CHUNK) {
-        // 小文件或不支持 Range，直接用已获取的数据
+    if (!serverSupportsRange || !totalSize) {
         showDp(false);
-        const blob = new Blob([firstChunkBuf], { type: 'video/mp4' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
-        showToast(`下载完成: ${filename} (${fmtMB(firstChunkBuf.byteLength)}MB)`, 'success');
-        return;
+        throw new Error('服务器不支持 Range 分片，无法保证大文件完整性');
     }
 
     // 2. 大文件分片下载
     const supportsFSAccess = 'showSaveFilePicker' in window;
-    let writable = null, blobParts = [];
+    let writable = null, blobParts = new Array(Math.ceil(totalSize / CHUNK));
     const totalMB = fmtMB(totalSize);
 
     if (supportsFSAccess) {
@@ -1517,14 +1520,14 @@ async function browserDownload(videoUrl, filename, progressEl) {
         }
     }
 
-    // 3. 写入第一片数据
-    let downloaded = firstChunkBuf.byteLength;
+    // 3. 写入第一片数据到正确位置
+    let downloaded = firstChunk.buf.byteLength;
     if (writable) {
-        await writable.write(firstChunkBuf);
+        await writable.write({ type: 'write', position: firstChunk.start, data: firstChunk.buf });
     } else {
-        blobParts.push(firstChunkBuf);
+        blobParts[0] = firstChunk.buf;
     }
-    firstChunkBuf = null; // 释放内存
+    firstChunk = null;
 
     // 4. 继续拉取剩余分片
     const totalChunks = Math.ceil(totalSize / CHUNK);
@@ -1538,14 +1541,14 @@ async function browserDownload(videoUrl, filename, progressEl) {
         const resp = await fetch(downloadUrl, {
             headers: { 'Range': `bytes=${start}-${end}` }
         });
-        if (!resp.ok && resp.status !== 206) {
-            throw new Error(`分片 ${i + 1} 失败: HTTP ${resp.status}`);
+        if (resp.status !== 206) {
+            throw new Error(`分片 ${i + 1} 失败: HTTP ${resp.status}（服务器未返回 206 Partial Content）`);
         }
         const buf = await resp.arrayBuffer();
         if (writable) {
-            await writable.write(buf);
+            await writable.write({ type: 'write', position: start, data: buf });
         } else {
-            blobParts.push(buf);
+            blobParts[i] = buf;
         }
         downloaded += buf.byteLength;
         const elapsed = Date.now() - startTime;
@@ -1556,7 +1559,9 @@ async function browserDownload(videoUrl, filename, progressEl) {
     if (writable) {
         await writable.close();
     } else {
-        const blob = new Blob(blobParts, { type: 'video/mp4' });
+        // 过滤空槽（理论上不应有）
+        const parts = blobParts.filter(b => b);
+        const blob = new Blob(parts, { type: 'video/mp4' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
