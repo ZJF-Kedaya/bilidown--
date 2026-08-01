@@ -1,0 +1,1469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>B站视频批量解析下载</title>
+    <style>
+        :root {
+            --primary: #00a1d6; --primary-dark: #0088b8;
+            --bg: #f4f5f7; --card: #fff; --text: #18191c;
+            --text-secondary: #9499a0; --border: #e3e5e7;
+            --success: #02b340; --error: #f25d8e; --warning: #ffb027;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: var(--bg); color: var(--text); min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #00a1d6 0%, #00d4aa 100%);
+            color: #fff; padding: 20px 0; box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+        }
+        .header-inner {
+            max-width: 1200px; margin: 0 auto; padding: 0 24px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .logo { display: flex; align-items: center; gap: 12px; }
+        .logo-icon {
+            width: 40px; height: 40px; background: rgba(255,255,255,0.2);
+            border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 22px;
+        }
+        .logo h1 { font-size: 22px; font-weight: 600; }
+        .logo p { font-size: 13px; opacity: 0.85; margin-top: 2px; }
+        .header-tips { font-size: 12px; opacity: 0.8; text-align: right; line-height: 1.6; }
+        .main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+        /* Cookie Panel */
+        .cookie-panel {
+            background: var(--card); border-radius: 12px; padding: 16px 20px;
+            margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+            border: 2px solid transparent; transition: border-color 0.3s;
+        }
+        .cookie-panel.has-cookie { border-color: var(--success); }
+        .cookie-panel.no-cookie { border-color: var(--warning); }
+        .cookie-panel-header {
+            display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none;
+        }
+        .cookie-panel-header h2 {
+            font-size: 15px; display: flex; align-items: center; gap: 8px; margin: 0;
+        }
+        .cookie-panel-header h2::before {
+            content: ''; width: 4px; height: 18px; background: var(--warning); border-radius: 2px;
+        }
+        .cookie-status {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 500;
+        }
+        .cookie-status.ok { background: #e3fcef; color: var(--success); }
+        .cookie-status.missing { background: #fff3e0; color: var(--warning); }
+        .cookie-toggle { font-size: 16px; transition: transform 0.3s; color: var(--text-secondary); }
+        .cookie-toggle.open { transform: rotate(180deg); }
+        .cookie-panel-body { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
+        .cookie-panel-body.open { max-height: 600px; }
+        .cookie-panel-body-inner { padding-top: 14px; }
+        .cookie-input-group { margin-bottom: 10px; }
+        .cookie-input-group label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+        .cookie-input-group textarea {
+            width: 100%; border: 2px solid var(--border); border-radius: 8px;
+            padding: 10px 14px; font-size: 13px; font-family: monospace;
+            resize: vertical; min-height: 50px; transition: border-color 0.2s;
+        }
+        .cookie-input-group textarea:focus { outline: none; border-color: var(--primary); }
+        .cookie-help {
+            background: #f6f7f8; border-radius: 8px; padding: 12px; font-size: 12px;
+            line-height: 1.7; color: var(--text-secondary);
+        }
+        .cookie-help b { color: var(--text); }
+        .cookie-help ol { padding-left: 20px; margin: 4px 0; }
+        .cookie-help code { background: #e7e8ea; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+        .cookie-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+        /* Tabs */
+        .tabs {
+            display: flex; gap: 4px; margin-bottom: 16px; background: var(--card);
+            padding: 6px; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        }
+        .tab {
+            flex: 1; padding: 10px 20px; border: none; background: transparent;
+            color: var(--text-secondary); font-size: 14px; font-weight: 500;
+            cursor: pointer; border-radius: 8px; transition: all 0.2s;
+        }
+        .tab.active { background: var(--primary); color: #fff; }
+        .tab:hover:not(.active) { background: #f0f1f3; }
+
+        /* Input Section */
+        .input-section {
+            background: var(--card); border-radius: 12px; padding: 24px;
+            margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        }
+        .input-section h2 {
+            font-size: 16px; margin-bottom: 16px;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .input-section h2::before {
+            content: ''; width: 4px; height: 18px; background: var(--primary); border-radius: 2px;
+        }
+        .input-row { display: flex; gap: 12px; margin-bottom: 12px; }
+        .input-row textarea, .input-row input {
+            flex: 1; border: 2px solid var(--border); border-radius: 8px;
+            padding: 12px 16px; font-size: 14px; transition: border-color 0.2s; font-family: inherit; line-height: 1.8;
+        }
+        .input-row textarea { resize: vertical; min-height: 100px; }
+        .input-row input:focus, .input-row textarea:focus { outline: none; border-color: var(--primary); }
+        .input-row input::placeholder, .input-row textarea::placeholder { color: var(--text-secondary); }
+        .btn-group { display: flex; flex-direction: column; gap: 8px; justify-content: center; }
+        .btn {
+            padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px;
+            font-weight: 500; cursor: pointer; transition: all 0.2s; white-space: nowrap;
+            display: flex; align-items: center; gap: 6px; justify-content: center;
+        }
+        .btn:active { transform: scale(0.97); }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-success { background: var(--success); color: #fff; }
+        .btn-success:hover { background: #029c3a; }
+        .btn-outline { background: transparent; color: var(--primary); border: 2px solid var(--primary); }
+        .btn-outline:hover { background: var(--primary); color: #fff; }
+        .btn-sm { padding: 6px 14px; font-size: 12px; }
+
+        /* Settings */
+        .settings-row {
+            display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+            margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+        }
+        .setting-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+        .setting-item label { color: var(--text-secondary); white-space: nowrap; }
+        .setting-item select, .setting-item input[type="text"] {
+            border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 13px; background: #fff;
+        }
+        .setting-item select:focus, .setting-item input[type="text"]:focus { outline: none; border-color: var(--primary); }
+
+        /* UP主解析控制栏 */
+        .up-controls {
+            display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+            margin-top: 12px; padding: 12px; background: #f6f7f8; border-radius: 8px;
+        }
+        .up-info-display { font-size: 13px; color: var(--text); }
+        .up-info-display b { color: var(--primary); }
+
+        /* 分页导航 */
+        .pagination {
+            display: flex; gap: 4px; align-items: center; justify-content: center;
+            margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);
+        }
+        .page-btn {
+            min-width: 32px; height: 32px; padding: 0 10px; border: 1px solid var(--border);
+            border-radius: 6px; background: var(--card); color: var(--text); font-size: 13px;
+            cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; justify-content: center;
+        }
+        .page-btn:hover:not(:disabled):not(.active) { border-color: var(--primary); color: var(--primary); }
+        .page-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 600; }
+        .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .page-ellipsis { color: var(--text-secondary); font-size: 13px; padding: 0 4px; }
+
+        /* Progress */
+        .progress-section {
+            background: var(--card); border-radius: 12px; padding: 16px 24px;
+            margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); display: none;
+        }
+        .progress-section.active { display: block; }
+        .progress-bar-wrap { background: #e7e8ea; border-radius: 6px; height: 8px; overflow: hidden; margin: 8px 0; }
+        .progress-bar {
+            height: 100%; background: linear-gradient(90deg, var(--primary), #00d4aa);
+            border-radius: 6px; transition: width 0.3s; width: 0%;
+        }
+        .progress-text { font-size: 13px; color: var(--text-secondary); display: flex; justify-content: space-between; }
+
+        /* Results */
+        .results-section { display: none; }
+        .results-section.active { display: block; }
+        .results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .results-header h2 { font-size: 16px; display: flex; align-items: center; gap: 8px; }
+        .results-header h2::before { content: ''; width: 4px; height: 18px; background: var(--success); border-radius: 2px; }
+        .results-count { font-size: 13px; color: var(--text-secondary); }
+
+        /* Video Card */
+        .video-card {
+            background: var(--card); border-radius: 12px; margin-bottom: 16px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.06); overflow: hidden; transition: box-shadow 0.2s;
+        }
+        .video-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.1); }
+        .video-card-error { border-left: 4px solid var(--error); }
+        .video-card-success { border-left: 4px solid var(--success); }
+        .video-card-loading { border-left: 4px solid var(--warning); }
+        .video-card-inner { display: flex; padding: 16px; gap: 16px; }
+        .video-cover {
+            width: 180px; min-width: 180px; height: 101px; border-radius: 8px;
+            object-fit: cover; background: #e7e8ea;
+        }
+        .video-info { flex: 1; min-width: 0; }
+        .video-title {
+            font-size: 15px; font-weight: 500; margin-bottom: 6px; line-height: 1.4;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+        }
+        .video-meta {
+            font-size: 12px; color: var(--text-secondary);
+            display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 10px;
+        }
+        .video-meta span { display: flex; align-items: center; gap: 4px; }
+        .video-meta a { color: var(--primary); text-decoration: none; }
+        .video-pages { font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; }
+        .video-pages select {
+            border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; font-size: 12px; margin-left: 4px;
+        }
+        .quality-tag {
+            display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px;
+            border-radius: 4px; font-size: 12px; cursor: pointer;
+            border: 1px solid var(--border); background: #fff; transition: all 0.2s;
+        }
+        .quality-tag:hover { border-color: var(--primary); color: var(--primary); }
+        .quality-tag.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+        .download-btns { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+        .error-msg { color: var(--error); font-size: 13px; padding: 8px 0; }
+        .loading-msg { color: var(--warning); font-size: 13px; }
+
+        /* DASH info */
+        .dash-info { margin-top: 8px; padding: 10px; background: #f6f7f8; border-radius: 6px; font-size: 12px; }
+        .dash-info-title { font-weight: 500; margin-bottom: 6px; color: var(--text); }
+        .dash-streams { display: flex; gap: 12px; flex-wrap: wrap; }
+        .dash-stream { padding: 4px 8px; background: #fff; border-radius: 4px; border: 1px solid var(--border); }
+
+        /* Toast */
+        .toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+        .toast {
+            padding: 12px 20px; border-radius: 8px; color: #fff; font-size: 14px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15); animation: toastIn 0.3s ease; max-width: 400px;
+        }
+        .toast-success { background: var(--success); }
+        .toast-error { background: var(--error); }
+        .toast-info { background: var(--primary); }
+        .toast-warning { background: var(--warning); color: #333; }
+        @keyframes toastIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
+
+        .footer { text-align: center; padding: 24px; color: var(--text-secondary); font-size: 12px; line-height: 1.8; }
+        .footer a { color: var(--primary); text-decoration: none; }
+        .spinner {
+            display: inline-block; width: 16px; height: 16px;
+            border: 2px solid var(--border); border-top-color: var(--primary);
+            border-radius: 50%; animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        @media (max-width: 768px) {
+            .header-inner { flex-direction: column; gap: 12px; text-align: center; }
+            .header-tips { text-align: center; }
+            .input-row { flex-direction: column; }
+            .btn-group { flex-direction: row; }
+            .video-card-inner { flex-direction: column; }
+            .video-cover { width: 100%; min-width: unset; height: auto; aspect-ratio: 16/9; }
+            .settings-row { flex-direction: column; align-items: flex-start; }
+            .tabs { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <div class="header-inner">
+        <div class="logo">
+            <div class="logo-icon">B</div>
+            <div>
+                <h1>B站视频批量解析下载</h1>
+                <p>纯网页实现 · 支持UP主主页/合集/批量链接</p>
+            </div>
+        </div>
+        <div class="header-tips">
+            支持BV号/UP主UID/合集链接批量解析<br>
+            填入Cookie可获取更高清晰度
+        </div>
+    </div>
+</div>
+
+<div class="main">
+
+    <!-- Cookie Panel -->
+    <div class="cookie-panel" id="cookiePanel">
+        <div class="cookie-panel-header" onclick="toggleCookiePanel()">
+            <h2>登录Cookie设置 <span class="cookie-status missing" id="cookieStatus">未设置</span></h2>
+            <span class="cookie-toggle" id="cookieToggle">&#9660;</span>
+        </div>
+        <div class="cookie-panel-body" id="cookiePanelBody">
+            <div class="cookie-panel-body-inner">
+                <div class="cookie-input-group">
+                    <label>方式一：直接粘贴 SESSDATA（推荐）</label>
+                    <textarea id="sessdataInput" rows="1" placeholder="粘贴你的 SESSDATA 值"></textarea>
+                </div>
+                <div class="cookie-input-group">
+                    <label>方式二：粘贴完整 Cookie 字符串</label>
+                    <textarea id="fullCookieInput" rows="2" placeholder='从浏览器F12 → Network → 任意bilibili请求 → Request Headers → Cookie 整行复制'></textarea>
+                </div>
+                <div class="cookie-actions">
+                    <button class="btn btn-primary btn-sm" onclick="applyCookie()">应用Cookie</button>
+                    <button class="btn btn-outline btn-sm" onclick="clearCookie()">清除Cookie</button>
+                    <button class="btn btn-outline btn-sm" onclick="testCookie()">测试Cookie</button>
+                </div>
+                <div class="cookie-help" style="margin-top:10px;">
+                    <b>如何获取Cookie？</b>
+                    <ol>
+                        <li>在浏览器中打开 <a href="https://www.bilibili.com" target="_blank" style="color:var(--primary)">bilibili.com</a> 并登录</li>
+                        <li>按 <code>F12</code> → <code>Application</code> → <code>Cookies → https://www.bilibili.com</code></li>
+                        <li>找到 <code>SESSDATA</code>，双击复制其值，粘贴到上方</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+        <button class="tab active" onclick="switchTab('batch')">批量链接解析</button>
+        <button class="tab" onclick="switchTab('up')">UP主主页解析</button>
+        <button class="tab" onclick="switchTab('collection')">合集/列表解析</button>
+    </div>
+
+    <!-- 批量链接解析 -->
+    <div class="input-section" id="tab-batch">
+        <h2>输入视频链接</h2>
+        <div class="input-row">
+            <textarea id="urlInput" placeholder="请输入B站视频链接或BV号，每行一个，支持以下格式：&#10;BV1xx411c7Xq&#10;https://www.bilibili.com/video/BV1xx411c7Xq&#10;https://b23.tv/xxxxx&#10;av123456789"></textarea>
+            <div class="btn-group">
+                <button class="btn btn-primary" id="parseBtn" onclick="startParse()">批量解析</button>
+                <button class="btn btn-outline" onclick="clearAll()">清空</button>
+            </div>
+        </div>
+        <div class="settings-row">
+            <div class="setting-item">
+                <label>清晰度：</label>
+                <select id="qualitySelect">
+                    <option value="16">360P 流畅</option>
+                    <option value="32">480P 清晰</option>
+                    <option value="64" selected>720P 高清</option>
+                    <option value="80">1080P 超清(需登录)</option>
+                    <option value="112">1080P+ (需大会员)</option>
+                    <option value="116">1080P 60帧(需大会员)</option>
+                </select>
+            </div>
+            <div class="setting-item">
+                <label>格式：</label>
+                <select id="formatSelect">
+                    <option value="mp4">MP4 (兼容性好)</option>
+                    <option value="dash">DASH (音视频分离)</option>
+                </select>
+            </div>
+            <div class="setting-item">
+                <label>下载方式：</label>
+                <select id="downloadMode">
+                    <option value="proxy" selected>代理下载(推荐)</option>
+                    <option value="copy">复制链接(用IDM/迅雷)</option>
+                    <option value="open">新标签页打开</option>
+                </select>
+            </div>
+            <div class="setting-item">
+                <label>保存目录：</label>
+                <input type="text" id="saveDir" placeholder="浏览器默认下载目录" style="width:180px;font-size:12px;" disabled>
+                <button class="btn btn-sm" onclick="showSaveDirTip()" style="font-size:11px;padding:2px 8px;">设置</button>
+            </div>
+            <div class="setting-item">
+                <label>后端：</label>
+                <select id="proxySelect">
+                    <option value="vercel" selected>Vercel 同源后端</option>
+                </select>
+                <button class="btn btn-sm" onclick="testVercel()" style="font-size:11px;padding:2px 8px;margin-left:6px;">测试</button>
+                <span id="vercelTestResult" style="font-size:11px;margin-left:6px;color:var(--text-secondary);"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- UP主主页解析 -->
+    <div class="input-section" id="tab-up" style="display:none;">
+        <h2>UP主主页视频解析</h2>
+        <div class="input-row">
+            <input type="text" id="upUidInput" placeholder="输入UP主的UID或主页链接，例如：37737161 或 https://space.bilibili.com/37737161">
+            <div class="btn-group">
+                <button class="btn btn-primary" id="fetchUpBtn" onclick="fetchUpVideos()">获取视频列表</button>
+                <button class="btn btn-outline" onclick="clearUpList()">清空</button>
+            </div>
+        </div>
+        <div class="settings-row">
+            <div class="setting-item">
+                <label>排序方式：</label>
+                <select id="upSortSelect">
+                    <option value="pubdate">按发布时间(最新优先)</option>
+                    <option value="click">按播放量(高优先)</option>
+                    <option value="stow">按收藏数(高优先)</option>
+                </select>
+            </div>
+            <div class="setting-item">
+                <label>每页数量：</label>
+                <select id="upPageSize">
+                    <option value="10">10个</option>
+                    <option value="20">20个</option>
+                    <option value="30" selected>30个</option>
+                    <option value="50">50个</option>
+                </select>
+            </div>
+            <div class="setting-item" style="margin-left:auto;color:var(--text-secondary);font-size:12px;">
+                复用上方清晰度/格式/代理设置
+            </div>
+        </div>
+        <div class="up-controls" id="upControls" style="display:none;">
+            <div class="up-info-display" id="upInfoDisplay"></div>
+            <div style="flex:1;"></div>
+            <button class="btn btn-outline btn-sm" onclick="parseAllUpVideos()">解析全部</button>
+            <button class="btn btn-success btn-sm" onclick="parseSelectedUpVideos()">解析选中</button>
+        </div>
+        <div id="upVideoList" style="margin-top:12px;"></div>
+        <div id="upPagination" style="margin-top:12px;"></div>
+    </div>
+
+    <!-- 合集/列表解析 -->
+    <div class="input-section" id="tab-collection" style="display:none;">
+        <h2>合集/视频列表解析</h2>
+        <div class="input-row">
+            <input type="text" id="collectionInput" placeholder="输入合集/列表链接或ID，例如：&#10;https://space.bilibili.com/37737161/channel/collectiondetail?sid=1227671&#10;https://space.bilibili.com/37737161/lists/&lt;series_id&gt;&#10;或直接输入 sid=1227671">
+            <div class="btn-group">
+                <button class="btn btn-primary" id="fetchColBtn" onclick="fetchCollectionVideos()">获取合集视频</button>
+                <button class="btn btn-outline" onclick="clearCollectionList()">清空</button>
+            </div>
+        </div>
+        <div class="settings-row">
+            <div class="setting-item">
+                <label>类型：</label>
+                <select id="collectionType">
+                    <option value="season">合集 (season)</option>
+                    <option value="series">列表/系列 (series)</option>
+                </select>
+            </div>
+            <div class="setting-item" style="margin-left:auto;color:var(--text-secondary);font-size:12px;">
+                合集链接通常包含 collectiondetail，列表包含 seriesdetail
+            </div>
+        </div>
+        <div id="collectionInfo" style="margin-top:12px;"></div>
+        <div id="collectionVideoList" style="margin-top:12px;"></div>
+    </div>
+
+    <!-- Progress -->
+    <div class="progress-section" id="progressSection">
+        <div class="progress-text">
+            <span id="progressLabel">正在解析...</span>
+            <span id="progressCount">0/0</span>
+        </div>
+        <div class="progress-bar-wrap">
+            <div class="progress-bar" id="progressBar"></div>
+        </div>
+    </div>
+
+    <!-- Results -->
+    <div class="results-section" id="resultsSection">
+        <div class="results-header">
+            <h2>解析结果</h2>
+            <div>
+                <span class="results-count" id="resultsCount"></span>
+                <button class="btn btn-success btn-sm" onclick="downloadAll()" style="margin-left:12px;">全部下载</button>
+                <button class="btn btn-outline btn-sm" onclick="copyAllLinks()" style="margin-left:4px;">复制全部链接</button>
+            </div>
+        </div>
+        <div id="resultsList"></div>
+    </div>
+</div>
+
+<div class="footer">
+    本工具仅供学习研究使用，请遵守B站相关条款，下载的视频请勿用于商业用途<br>
+    技术参考：<a href="https://github.com/SocialSisterYi/bilibili-API-collect" target="_blank">bilibili-API-collect</a>
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+// ==================== 全局状态 ====================
+let parsedVideos = [];
+let cookieString = '';
+let upVideoCache = []; // UP主视频缓存（当前页）
+let upCurrentPage = 1;
+let upTotalVideos = 0;
+let upMid = '';
+let upPageCache = {}; // 页码缓存: { pageNum: [videos] }
+let upPageSizeVal = 30;
+let collectionVideoCache = []; // 合集视频缓存
+
+// ==================== Cookie管理 ====================
+function toggleCookiePanel() {
+    document.getElementById('cookiePanelBody').classList.toggle('open');
+    document.getElementById('cookieToggle').classList.toggle('open');
+}
+
+function applyCookie() {
+    const sessdata = document.getElementById('sessdataInput').value.trim();
+    const fullCookie = document.getElementById('fullCookieInput').value.trim();
+    if (fullCookie) {
+        cookieString = fullCookie;
+        const match = fullCookie.match(/SESSDATA=([^;]+)/);
+        if (match) document.getElementById('sessdataInput').value = match[1];
+    } else if (sessdata) {
+        cookieString = `SESSDATA=${sessdata}`;
+    } else { cookieString = ''; }
+    updateCookieStatus();
+    if (cookieString) {
+        showToast('Cookie已应用', 'success');
+        localStorage.setItem('bilibili_cookie', cookieString);
+    } else { showToast('未输入Cookie', 'warning'); }
+}
+
+function clearCookie() {
+    cookieString = '';
+    document.getElementById('sessdataInput').value = '';
+    document.getElementById('fullCookieInput').value = '';
+    localStorage.removeItem('bilibili_cookie');
+    updateCookieStatus();
+    showToast('Cookie已清除', 'info');
+}
+
+function testCookie() {
+    if (!cookieString) { showToast('请先输入Cookie', 'warning'); return; }
+    fetchWithProxy('https://api.bilibili.com/x/web-interface/nav')
+        .then(data => {
+            if (data.code === 0 && data.data.isLogin) {
+                showToast(`Cookie有效！用户：${data.data.uname}`, 'success');
+            } else { showToast('Cookie无效或已过期', 'error'); }
+        }).catch(err => showToast(`测试失败：${err.message}`, 'error'));
+}
+
+function updateCookieStatus() {
+    const panel = document.getElementById('cookiePanel');
+    const status = document.getElementById('cookieStatus');
+    if (cookieString) {
+        panel.className = 'cookie-panel has-cookie';
+        status.className = 'cookie-status ok';
+        status.textContent = '已设置';
+    } else {
+        panel.className = 'cookie-panel no-cookie';
+        status.className = 'cookie-status missing';
+        status.textContent = '未设置';
+    }
+}
+
+function loadSavedCookie() {
+    const saved = localStorage.getItem('bilibili_cookie');
+    if (saved) {
+        cookieString = saved;
+        const match = saved.match(/SESSDATA=([^;]+)/);
+        if (match) document.getElementById('sessdataInput').value = match[1];
+        document.getElementById('fullCookieInput').value = saved;
+        updateCookieStatus();
+    }
+}
+
+// ==================== 工具函数 ====================
+function showToast(msg, type = 'info') {
+    const container = document.getElementById('toastContainer');
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = msg;
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transition = 'opacity 0.3s';
+        setTimeout(() => toast.remove(), 300);
+    }, 4000);
+}
+
+function getProxy() { return 'vercel'; }
+function getQuality() { return parseInt(document.getElementById('qualitySelect').value); }
+function getFormat() { return document.getElementById('formatSelect').value; }
+
+// 同源 Vercel 后端测试
+async function testVercel() {
+    const resultEl = document.getElementById('vercelTestResult');
+    resultEl.style.color = 'var(--text-secondary)';
+    resultEl.textContent = '测试中...';
+    try {
+        const resp = await fetch('/api/health', { signal: AbortSignal.timeout(8000) });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+            resultEl.style.color = 'var(--success)';
+            resultEl.textContent = `后端正常 · WBI:${data.wbi ? '✓' : '✗'} · Cookie:${data.hasAnonCookie ? '✓' : '✗'}`;
+            showToast('Vercel 后端正常', 'success');
+        } else {
+            resultEl.style.color = 'var(--error)';
+            resultEl.textContent = '后端异常';
+        }
+    } catch (e) {
+        resultEl.style.color = 'var(--error)';
+        resultEl.textContent = '后端不可用: ' + e.message;
+        showToast('后端不可用: ' + e.message, 'error');
+    }
+}
+
+// 构建同源后端请求URL
+function buildProxyUrl(targetUrl) {
+    let url = `/api/api?url=${encodeURIComponent(targetUrl)}`;
+    if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
+    return url;
+}
+
+// 统一的 fetch（同源 Vercel 后端，无 CORS 问题）
+async function fetchWithProxy(url) {
+    return await doFetch(buildProxyUrl(url), 15000);
+}
+
+// 基础fetch请求
+async function doFetch(url, timeout = 8000) {
+    const headers = { 'Accept': 'application/json, text/plain, */*' };
+    const resp = await fetch(url, { headers, signal: AbortSignal.timeout(timeout) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (data.code === -412) throw new Error('请求被风控拦截(412)，请稍后重试');
+    return data;
+}
+
+// 专门用于playurl请求
+async function fetchPlayUrl(url) {
+    const data = await fetchWithProxy(url);
+    if (data.code === 0) return data;
+    if (data.code === -101) throw new Error('登录态失效，请更新Cookie');
+    if (data.code === -403) throw new Error('权限不足，可能需要大会员');
+    throw new Error(data.message || `错误码 ${data.code}`);
+}
+
+function extractVideoId(text) {
+    text = text.trim();
+    let m = text.match(/BV[a-zA-Z0-9]+/);
+    if (m) return { type: 'bvid', id: m[0] };
+    m = text.match(/av(\d+)/i);
+    if (m) return { type: 'avid', id: m[1] };
+    if (/^\d+$/.test(text)) return { type: 'avid', id: text };
+    return null;
+}
+
+// 从UP主链接提取UID
+function extractMid(text) {
+    text = text.trim();
+    let m = text.match(/space\.bilibili\.com\/(\d+)/);
+    if (m) return m[1];
+    m = text.match(/mid[=:](\d+)/i);
+    if (m) return m[1];
+    if (/^\d+$/.test(text)) return text;
+    return null;
+}
+
+// 从合集链接提取sid和类型
+function extractCollectionId(text) {
+    text = text.trim();
+    let m = text.match(/sid[=:](\d+)/i);
+    if (m) return { sid: m[1], type: 'auto' };
+    m = text.match(/collectiondetail.*sid=(\d+)/i);
+    if (m) return { sid: m[1], type: 'season' };
+    m = text.match(/seriesdetail.*sid=(\d+)/i);
+    if (m) return { sid: m[1], type: 'series' };
+    m = text.match(/lists\/(\d+)/i);
+    if (m) return { sid: m[1], type: 'series' };
+    if (/^\d+$/.test(text)) return { sid: text, type: 'auto' };
+    return null;
+}
+
+function formatSize(bytes) {
+    if (!bytes) return '';
+    if (bytes < 1024) return bytes + 'B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + 'KB';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + 'MB';
+    return (bytes / 1073741824).toFixed(2) + 'GB';
+}
+function formatDuration(seconds) {
+    if (!seconds) return '';
+    const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
+    return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+}
+function formatNum(n) { return n >= 10000 ? (n / 10000).toFixed(1) + '万' : String(n); }
+
+// ==================== Tab切换 ====================
+function switchTab(tab) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    event.target.classList.add('active');
+    ['batch', 'up', 'collection'].forEach(name => {
+        document.getElementById('tab-' + name).style.display = name === tab ? 'block' : 'none';
+    });
+}
+
+// ==================== API: 视频信息与播放地址 ====================
+async function getVideoInfo(bvid) {
+    const data = await fetchWithProxy(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`);
+    if (data.code !== 0) throw new Error(data.message || '获取视频信息失败');
+    return data.data;
+}
+async function getVideoInfoByAid(aid) {
+    const data = await fetchWithProxy(`https://api.bilibili.com/x/web-interface/view?aid=${aid}`);
+    if (data.code !== 0) throw new Error(data.message || '获取视频信息失败');
+    return data.data;
+}
+async function getPlayUrl(bvid, cid, qn) {
+    const data = await fetchPlayUrl(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&fnval=1&fourk=1&platform=pc`);
+    return data.data;
+}
+async function getDashPlayUrl(bvid, cid, qn) {
+    const data = await fetchPlayUrl(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&fnval=16&fourk=1&platform=pc`);
+    return data.data;
+}
+
+// ==================== API: UP主视频列表 ====================
+async function getUpVideos(mid, pn, ps, order) {
+    // 同源 Vercel 后端的 /api/up 接口，自动 WBI 签名
+    let url = `/api/up?mid=${mid}&pn=${pn}&ps=${ps}&order=${order}`;
+    if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
+    const data = await doFetch(url, 15000);
+    if (data.code !== 0) throw new Error(data.message || '获取UP主视频列表失败');
+    return data.data;
+}
+
+// ==================== API: 合集视频列表 ====================
+async function getSeasonVideos(mid, seasonId, pageNum, pageSize) {
+    let url = `/api/season?mid=${mid}&season_id=${seasonId}&page_num=${pageNum}&page_size=${pageSize}`;
+    if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
+    const data = await doFetch(url, 15000);
+    if (data.code !== 0) throw new Error(data.message || '获取合集视频失败');
+    return data.data;
+}
+
+async function getSeriesVideos(mid, seriesId, pageNum, pageSize) {
+    let url = `/api/season?mid=${mid}&series_id=${seriesId}&page_num=${pageNum}&page_size=${pageSize}`;
+    if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
+    const data = await doFetch(url, 15000);
+    if (data.code !== 0) throw new Error(data.message || '获取列表视频失败');
+    return data.data;
+}
+
+// ==================== 批量链接解析 ====================
+async function startParse() {
+    const input = document.getElementById('urlInput').value.trim();
+    if (!input) { showToast('请输入视频链接或BV号', 'error'); return; }
+    const qn = getQuality();
+    if (!cookieString && qn >= 64) showToast('未设置Cookie，720P及以上可能无法获取', 'warning');
+
+    const lines = input.split('\n').map(l => l.trim()).filter(l => l);
+    const videoIds = [];
+    for (const line of lines) {
+        const vid = extractVideoId(line);
+        if (vid) videoIds.push(vid);
+        else showToast(`无法识别: ${line.substring(0, 40)}`, 'error');
+    }
+    if (videoIds.length === 0) { showToast('未找到有效链接', 'error'); return; }
+
+    const seen = new Set();
+    const uniqueIds = videoIds.filter(v => { const k = v.type+v.id; if (seen.has(k)) return false; seen.add(k); return true; });
+
+    parsedVideos = [];
+    await parseVideoList(uniqueIds.map(v => ({ bvid: v.type === 'bvid' ? v.id : null, avid: v.type === 'avid' ? v.id : null })));
+}
+
+// 通用：解析视频列表（支持bvid或avid），并发解析加速
+async function parseVideoList(videoList) {
+    const parseBtn = document.getElementById('parseBtn');
+    parseBtn.disabled = true;
+    parseBtn.innerHTML = '<span class="spinner"></span> 解析中...';
+
+    const progressSection = document.getElementById('progressSection');
+    const progressBar = document.getElementById('progressBar');
+    const progressLabel = document.getElementById('progressLabel');
+    const progressCount = document.getElementById('progressCount');
+    progressSection.classList.add('active');
+
+    const resultsSection = document.getElementById('resultsSection');
+    const resultsList = document.getElementById('resultsList');
+    resultsSection.classList.add('active');
+
+    let successCount = 0, errorCount = 0;
+    const startIndex = parsedVideos.length;
+    const CONCURRENCY = 3; // 并发数
+
+    // 先创建所有loading卡片
+    for (let i = 0; i < videoList.length; i++) {
+        const v = videoList[i];
+        const cardId = `card-${startIndex + i}`;
+        resultsList.innerHTML += createLoadingCard(cardId, v.bvid || ('av'+v.avid));
+    }
+
+    // 并发解析
+    let completed = 0;
+    const tasks = videoList.map((v, i) => async () => {
+        const idx = startIndex + i;
+        const cardId = `card-${idx}`;
+        try {
+            let info;
+            if (v.bvid) info = await getVideoInfo(v.bvid);
+            else info = await getVideoInfoByAid(v.avid);
+
+            const bvid = info.bvid, cid = info.cid, qn = getQuality();
+            let playData = null, dashData = null;
+            try { playData = await getPlayUrl(bvid, cid, qn); } catch (e) {
+                if (qn > 32) { try { playData = await getPlayUrl(bvid, cid, 16); } catch(e2) {} }
+            }
+            if (getFormat() === 'dash') {
+                try { dashData = await getDashPlayUrl(bvid, cid, qn); } catch (e) {
+                    if (qn > 32) { try { dashData = await getDashPlayUrl(bvid, cid, 16); } catch(e2) {} }
+                }
+            }
+
+            const videoInfo = {
+                index: idx, bvid, avid: info.aid, title: info.title,
+                cover: info.pic, owner: info.owner, stat: info.stat,
+                duration: info.duration, pages: info.pages, pubdate: info.pubdate,
+                playData, dashData
+            };
+            parsedVideos.push(videoInfo);
+            successCount++;
+            updateCard(cardId, videoInfo);
+        } catch (err) {
+            errorCount++;
+            updateCardError(cardId, v.bvid || ('av'+v.avid), err.message);
+        } finally {
+            completed++;
+            progressBar.style.width = (completed / videoList.length * 100) + '%';
+            progressLabel.textContent = `正在解析...`;
+            progressCount.textContent = `${completed}/${videoList.length}`;
+        }
+    });
+
+    // 控制并发
+    const executing = new Set();
+    for (const task of tasks) {
+        const p = task().then(() => executing.delete(p));
+        executing.add(p);
+        if (executing.size >= CONCURRENCY) {
+            await Promise.race(executing);
+        }
+    }
+    await Promise.all(executing);
+
+    progressBar.style.width = '100%';
+    progressLabel.textContent = '解析完成';
+    setTimeout(() => progressSection.classList.remove('active'), 1500);
+    parseBtn.disabled = false;
+    parseBtn.innerHTML = '批量解析';
+
+    document.getElementById('resultsCount').textContent = `成功 ${successCount}，失败 ${errorCount}`;
+    if (successCount > 0) showToast(`成功解析 ${successCount} 个视频`, 'success');
+    if (errorCount > 0) showToast(`${errorCount} 个解析失败`, 'error');
+}
+
+// ==================== UP主主页解析 ====================
+async function fetchUpVideos() {
+    const input = document.getElementById('upUidInput').value.trim();
+    if (!input) { showToast('请输入UP主UID或主页链接', 'error'); return; }
+    const mid = extractMid(input);
+    if (!mid) { showToast('无法识别UID，请输入数字UID或主页链接', 'error'); return; }
+
+    upMid = mid;
+    upCurrentPage = 1;
+    upVideoCache = [];
+    upPageCache = {};
+    upPageSizeVal = parseInt(document.getElementById('upPageSize').value);
+    const btn = document.getElementById('fetchUpBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 获取中...';
+
+    const order = document.getElementById('upSortSelect').value;
+    const ps = upPageSizeVal;
+
+    try {
+        const data = await getUpVideos(mid, 1, ps, order);
+        upTotalVideos = data.page ? data.page.count : 0;
+        upVideoCache = data.list ? data.list.vlist || [] : [];
+
+        if (order === 'click') {
+            upVideoCache.sort((a, b) => (b.play || 0) - (a.play || 0));
+        }
+
+        // 缓存第1页
+        upPageCache[1] = upVideoCache.slice();
+
+        renderUpVideoList();
+        renderPagination();
+        document.getElementById('upControls').style.display = 'flex';
+        updateUpInfoDisplay();
+        showToast(`获取到 ${upVideoCache.length} 个视频`, 'success');
+    } catch (err) {
+        showToast(`获取失败: ${err.message}`, 'error');
+    }
+    btn.disabled = false;
+    btn.innerHTML = '获取视频列表';
+}
+
+async function goToUpPage(pageNum) {
+    if (!upMid || pageNum < 1) return;
+    const totalPages = Math.max(1, Math.ceil(upTotalVideos / upPageSizeVal));
+    if (pageNum > totalPages) return;
+    if (pageNum === upCurrentPage) return;
+
+    // 检查缓存
+    const cached = upPageCache[pageNum];
+    if (cached) {
+        upCurrentPage = pageNum;
+        upVideoCache = cached;
+        renderUpVideoList();
+        renderPagination();
+        updateUpInfoDisplay();
+        return;
+    }
+
+    // 需要从API加载
+    upCurrentPage = pageNum;
+    const order = document.getElementById('upSortSelect').value;
+    const listEl = document.getElementById('upVideoList');
+    listEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-secondary);"><span class="spinner"></span> 加载中...</div>';
+
+    try {
+        const data = await getUpVideos(upMid, pageNum, upPageSizeVal, order);
+        upVideoCache = data.list ? data.list.vlist || [] : [];
+        if (order === 'click') {
+            upVideoCache.sort((a, b) => (b.play || 0) - (a.play || 0));
+        }
+        // 缓存当前页
+        upPageCache[pageNum] = upVideoCache.slice();
+        renderUpVideoList();
+        renderPagination();
+        updateUpInfoDisplay();
+    } catch (err) {
+        showToast(`加载失败: ${err.message}`, 'error');
+        upCurrentPage = Object.keys(upPageCache).length > 0 ? Math.max(...Object.keys(upPageCache).map(Number)) : 1;
+        renderUpVideoList();
+        renderPagination();
+    }
+}
+
+function updateUpInfoDisplay() {
+    const totalPages = Math.max(1, Math.ceil(upTotalVideos / upPageSizeVal));
+    document.getElementById('upInfoDisplay').innerHTML =
+        `UP主 UID: <b>${upMid}</b> · 共 <b>${upTotalVideos}</b> 个视频 · 第 <b>${upCurrentPage}/${totalPages}</b> 页`;
+}
+
+function renderPagination() {
+    const el = document.getElementById('upPagination');
+    if (!el) return;
+    const totalPages = Math.max(1, Math.ceil(upTotalVideos / upPageSizeVal));
+    if (totalPages <= 1) { el.innerHTML = ''; return; }
+
+    let html = '<div class="pagination">';
+    html += `<button class="page-btn" onclick="goToUpPage(${upCurrentPage - 1})" ${upCurrentPage <= 1 ? 'disabled' : ''}>上一页</button>`;
+
+    const pages = [];
+    if (totalPages <= 7) {
+        for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+        pages.push(1);
+        if (upCurrentPage > 3) pages.push('...');
+        const start = Math.max(2, upCurrentPage - 1);
+        const end = Math.min(totalPages - 1, upCurrentPage + 1);
+        for (let i = start; i <= end; i++) pages.push(i);
+        if (upCurrentPage < totalPages - 2) pages.push('...');
+        pages.push(totalPages);
+    }
+
+    pages.forEach(p => {
+        if (p === '...') {
+            html += '<span class="page-ellipsis">...</span>';
+        } else {
+            html += `<button class="page-btn ${p === upCurrentPage ? 'active' : ''}" onclick="goToUpPage(${p})">${p}</button>`;
+        }
+    });
+
+    html += `<button class="page-btn" onclick="goToUpPage(${upCurrentPage + 1})" ${upCurrentPage >= totalPages ? 'disabled' : ''}>下一页</button>`;
+    html += '</div>';
+    el.innerHTML = html;
+}
+
+function renderUpVideoList() {
+    const list = document.getElementById('upVideoList');
+
+    let html = '<div style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">' +
+        '<input type="checkbox" id="upSelectAll" onclick="toggleSelectAllUp(this)" ' +
+        (upVideoCache.length > 0 ? '' : 'disabled') + '> <label for="upSelectAll" style="cursor:pointer;">全选</label>' +
+        ' &nbsp; 点击视频卡片可勾选</div>';
+    html += '<div style="max-height:500px;overflow-y:auto;">';
+    html += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;">';
+    for (const v of upVideoCache) {
+        const rawCover = v.pic ? (v.pic.startsWith('//') ? 'https:'+v.pic : v.pic) : '';
+        const cover = rawCover ? `/api/api?url=${encodeURIComponent(rawCover)}` : '';
+        html += `<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;cursor:pointer;position:relative;" onclick="toggleUpVideoCheck(this, '${v.bvid}')">
+            <div style="position:relative;">
+                <img src="${cover}" style="width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#e7e8ea;" onerror="this.onerror=null;this.src='${rawCover}';">
+                <span style="position:absolute;bottom:4px;right:4px;background:rgba(0,0,0,0.7);color:#fff;font-size:11px;padding:1px 4px;border-radius:2px;">${v.length || ''}</span>
+                <input type="checkbox" class="up-video-check" data-bvid="${v.bvid}" onclick="event.stopPropagation()" style="position:absolute;top:6px;left:6px;width:16px;height:16px;cursor:pointer;">
+            </div>
+            <div style="padding:6px 8px;">
+                <div style="font-size:12px;font-weight:500;line-height:1.4;height:2.8em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${v.title}</div>
+                <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
+                    &#128065; ${formatNum(v.play||0)} &nbsp;
+                    &#128172; ${formatNum(v.video_review||0)}
+                </div>
+            </div>
+        </div>`;
+    }
+    html += '</div></div>';
+    list.innerHTML = html;
+}
+
+function toggleSelectAllUp(checkbox) {
+    document.querySelectorAll('.up-video-check').forEach(cb => cb.checked = checkbox.checked);
+}
+function toggleUpVideoCheck(div, bvid) {
+    const cb = div.querySelector('input[type="checkbox"]');
+    cb.checked = !cb.checked;
+}
+
+async function parseSelectedUpVideos() {
+    const selected = [];
+    document.querySelectorAll('.up-video-check:checked').forEach(cb => {
+        selected.push({ bvid: cb.dataset.bvid });
+    });
+    if (selected.length === 0) { showToast('请先勾选要解析的视频', 'warning'); return; }
+    showToast(`开始解析 ${selected.length} 个视频`, 'info');
+    await parseVideoList(selected);
+}
+
+async function parseAllUpVideos() {
+    if (upVideoCache.length === 0) { showToast('请先获取视频列表', 'error'); return; }
+    // 检查是否已加载全部
+    if (upVideoCache.length < upTotalVideos) {
+        if (!confirm(`当前只加载了 ${upVideoCache.length}/${upTotalVideos} 个视频，是否加载全部后解析？\n点击取消则只解析已加载的视频`)) {
+            showToast(`开始解析已加载的 ${upVideoCache.length} 个视频`, 'info');
+            await parseVideoList(upVideoCache.map(v => ({ bvid: v.bvid })));
+            return;
+        }
+        // 加载全部（利用缓存）
+        const order = document.getElementById('upSortSelect').value;
+        const ps = upPageSizeVal;
+        const totalPages = Math.ceil(upTotalVideos / ps);
+        const allVideos = [];
+        for (let p = 1; p <= totalPages; p++) {
+            const cached = upPageCache[p];
+            if (cached) {
+                for (const v of cached) allVideos.push(v);
+                continue;
+            }
+            await new Promise(r => setTimeout(r, 300));
+            try {
+                const data = await getUpVideos(upMid, p, ps, order);
+                const newV = data.list ? data.list.vlist || [] : [];
+                if (order === 'click') newV.sort((a, b) => (b.play || 0) - (a.play || 0));
+                upPageCache[p] = newV.slice();
+                for (const v of newV) allVideos.push(v);
+                document.getElementById('upInfoDisplay').innerHTML =
+                    `UP主 UID: <b>${upMid}</b> · 正在加载全部... <b>${allVideos.length}/${upTotalVideos}</b>`;
+            } catch (e) { break; }
+        }
+        upVideoCache = allVideos;
+        updateUpInfoDisplay();
+    }
+    showToast(`开始解析全部 ${upVideoCache.length} 个视频`, 'info');
+    await parseVideoList(upVideoCache.map(v => ({ bvid: v.bvid })));
+}
+
+function clearUpList() {
+    document.getElementById('upUidInput').value = '';
+    document.getElementById('upVideoList').innerHTML = '';
+    document.getElementById('upPagination').innerHTML = '';
+    document.getElementById('upControls').style.display = 'none';
+    upVideoCache = []; upMid = ''; upCurrentPage = 1; upTotalVideos = 0; upPageCache = {};
+}
+
+// ==================== 合集/列表解析 ====================
+async function fetchCollectionVideos() {
+    const input = document.getElementById('collectionInput').value.trim();
+    if (!input) { showToast('请输入合集链接或ID', 'error'); return; }
+    const colInfo = extractCollectionId(input);
+    if (!colInfo) { showToast('无法识别合集ID，请输入链接或数字ID', 'error'); return; }
+
+    let type = document.getElementById('collectionType').value;
+    if (colInfo.type !== 'auto') type = colInfo.type;
+    const sid = colInfo.sid;
+
+    // 需要mid，从链接中提取或让用户输入
+    let mid = extractMid(input);
+    if (!mid) {
+        // 尝试从输入框获取
+        mid = prompt('请输入UP主的UID（合集所属UP主）:');
+        if (!mid) { showToast('需要UP主UID才能获取合集', 'error'); return; }
+    }
+
+    const btn = document.getElementById('fetchColBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 获取中...';
+
+    try {
+        let data;
+        if (type === 'season') {
+            data = await getSeasonVideos(mid, sid, 1, 30);
+        } else {
+            data = await getSeriesVideos(mid, sid, 1, 30);
+        }
+
+        collectionVideoCache = data.archives || [];
+        const meta = data.meta || {};
+        const page = data.page || {};
+
+        // 显示合集信息
+        const infoHtml = `<div style="padding:14px;background:#f6f7f8;border-radius:8px;">
+            <div style="font-size:15px;font-weight:500;margin-bottom:6px;">${meta.name || '合集/列表'}</div>
+            <div style="font-size:12px;color:var(--text-secondary);">
+                ${meta.description || ''} <br>
+                共 <b>${page.total || collectionVideoCache.length}</b> 个视频 · 已加载 <b>${collectionVideoCache.length}</b> 个
+            </div>
+            <div style="margin-top:10px;">
+                <button class="btn btn-success btn-sm" onclick="parseAllCollectionVideos()">解析全部</button>
+                <button class="btn btn-primary btn-sm" onclick="parseSelectedCollectionVideos()">解析选中</button>
+                <span style="margin-left:10px;font-size:12px;color:var(--text-secondary);">点击下方视频可勾选</span>
+            </div>
+        </div>`;
+        document.getElementById('collectionInfo').innerHTML = infoHtml;
+
+        // 渲染视频列表
+        let html = '<div style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">' +
+            '<input type="checkbox" id="colSelectAll" onclick="document.querySelectorAll(\'.col-video-check\').forEach(cb => cb.checked = this.checked)"> ' +
+            '<label for="colSelectAll" style="cursor:pointer;">全选</label></div>';
+        html += '<div style="max-height:500px;overflow-y:auto;">';
+        html += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;">';
+        for (const v of collectionVideoCache) {
+            const rawCover = v.pic ? (v.pic.startsWith('//') ? 'https:'+v.pic : v.pic) : '';
+            const cover = rawCover ? `/api/api?url=${encodeURIComponent(rawCover)}` : '';
+            html += `<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;cursor:pointer;position:relative;" onclick="const cb=this.querySelector('input');cb.checked=!cb.checked">
+                <div style="position:relative;">
+                    <img src="${cover}" style="width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#e7e8ea;" onerror="this.onerror=null;this.src='${rawCover}';">
+                    <span style="position:absolute;bottom:4px;right:4px;background:rgba(0,0,0,0.7);color:#fff;font-size:11px;padding:1px 4px;border-radius:2px;">${formatDuration(v.duration)}</span>
+                    <input type="checkbox" class="col-video-check" data-bvid="${v.bvid}" onclick="event.stopPropagation()" style="position:absolute;top:6px;left:6px;width:16px;height:16px;cursor:pointer;">
+                </div>
+                <div style="padding:6px 8px;">
+                    <div style="font-size:12px;font-weight:500;line-height:1.4;height:2.8em;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${v.title}</div>
+                    <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
+                        &#128065; ${formatNum(v.stat?.view||0)}
+                    </div>
+                </div>
+            </div>`;
+        }
+        html += '</div></div>';
+        document.getElementById('collectionVideoList').innerHTML = html;
+        showToast(`获取到 ${collectionVideoCache.length} 个视频`, 'success');
+    } catch (err) {
+        showToast(`获取失败: ${err.message}`, 'error');
+    }
+    btn.disabled = false;
+    btn.innerHTML = '获取合集视频';
+}
+
+async function parseSelectedCollectionVideos() {
+    const selected = [];
+    document.querySelectorAll('.col-video-check:checked').forEach(cb => selected.push({ bvid: cb.dataset.bvid }));
+    if (selected.length === 0) { showToast('请先勾选视频', 'warning'); return; }
+    showToast(`开始解析 ${selected.length} 个视频`, 'info');
+    await parseVideoList(selected);
+}
+
+async function parseAllCollectionVideos() {
+    if (collectionVideoCache.length === 0) { showToast('无视频可解析', 'error'); return; }
+    showToast(`开始解析 ${collectionVideoCache.length} 个视频`, 'info');
+    await parseVideoList(collectionVideoCache.map(v => ({ bvid: v.bvid })));
+}
+
+function clearCollectionList() {
+    document.getElementById('collectionInput').value = '';
+    document.getElementById('collectionInfo').innerHTML = '';
+    document.getElementById('collectionVideoList').innerHTML = '';
+    collectionVideoCache = [];
+}
+
+// ==================== 卡片渲染 ====================
+function createLoadingCard(id, vid) {
+    return `<div class="video-card video-card-loading" id="${id}">
+        <div class="video-card-inner">
+            <div class="video-cover" style="display:flex;align-items:center;justify-content:center;">
+                <span class="spinner" style="width:24px;height:24px;"></span>
+            </div>
+            <div class="video-info"><div class="loading-msg"><span class="spinner"></span> 正在解析 ${vid}...</div></div>
+        </div></div>`;
+}
+
+function updateCard(id, info) {
+    const card = document.getElementById(id);
+    if (!card) return;
+    card.className = 'video-card video-card-success';
+    // 封面：通过同源后端转发绕过防盗链
+    const rawCover = info.cover.startsWith('//') ? 'https:'+info.cover : info.cover;
+    const coverUrl = rawCover ? `/api/api?url=${encodeURIComponent(rawCover)}` : '';
+    const pubTime = info.pubdate ? new Date(info.pubdate*1000).toLocaleDateString('zh-CN') : '';
+
+    let pagesHtml = '';
+    if (info.pages && info.pages.length > 1) {
+        const options = info.pages.map(p => `<option value="${p.cid}">P${p.page}: ${p.part}</option>`).join('');
+        pagesHtml = `<div class="video-pages">共 ${info.pages.length}P <select onchange="changePage(${info.index}, this.value)">${options}</select></div>`;
+    }
+
+    let downloadHtml = '';
+    if (info.playData) {
+        const durl = info.playData.durl || [];
+        const quality = info.playData.quality || 0;
+        const acceptQuality = info.playData.accept_quality || [];
+        const acceptDesc = info.playData.accept_description || [];
+        let qualityTags = acceptDesc.map((desc, idx) => {
+            const qnVal = acceptQuality[idx];
+            return `<span class="quality-tag ${qnVal===quality?'active':''}" onclick="reParse(${info.index}, ${qnVal})">${desc}</span>`;
+        }).join('');
+        const totalSize = durl.reduce((s,d) => s+(d.size||0), 0);
+        const videoUrl = durl.length>0 ? durl[0].url : '';
+        const backupUrl = durl.length>0 && durl[0].backup_url?.length>0 ? durl[0].backup_url[0] : '';
+        downloadHtml = `<div class="quality-tags">${qualityTags}</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">画质: ${quality} · 大小: ${formatSize(totalSize)}${durl.length>1?' · '+durl.length+'段':''}</div>
+        <div class="download-btns">
+            <button class="btn btn-primary btn-sm" onclick="downloadVideo('${encodeURIComponent(videoUrl)}', '${encodeURIComponent(info.title)}')">下载视频</button>
+            ${backupUrl?`<button class="btn btn-outline btn-sm" onclick="downloadVideo('${encodeURIComponent(backupUrl)}', '${encodeURIComponent(info.title)}')">备用线路</button>`:''}
+            <button class="btn btn-outline btn-sm" onclick="playInPage('${encodeURIComponent(info.bvid)}')">在线播放</button>
+            <button class="btn btn-outline btn-sm" onclick="copyLink('${encodeURIComponent(videoUrl)}')">复制链接</button>
+        </div>`;
+    }
+
+    let dashHtml = '';
+    if (info.dashData && info.dashData.dash) {
+        const dash = info.dashData.dash;
+        const videos = dash.video || [], audios = dash.audio || [];
+        const vStreams = videos.slice(0,5).map(v => `<div class="dash-stream"><strong>视频</strong> ${v.width}x${v.height} ${v.codecs||''}</div>`).join('');
+        const aStreams = audios.slice(0,3).map(a => `<div class="dash-stream"><strong>音频</strong> ${a.codecs||''}</div>`).join('');
+        const bestV = videos.length>0 ? (videos[0].baseUrl||videos[0].base_url||'') : '';
+        const bestA = audios.length>0 ? (audios[0].baseUrl||audios[0].base_url||'') : '';
+        dashHtml = `<div class="dash-info">
+            <div class="dash-info-title">DASH流（需ffmpeg合并: ffmpeg -i video.m4s -i audio.m4s -c copy out.mp4）</div>
+            <div class="dash-streams">${vStreams}${aStreams}</div>
+            <div class="download-btns" style="margin-top:8px;">
+                ${bestV?`<button class="btn btn-outline btn-sm" onclick="downloadDashStream('${encodeURIComponent(bestV)}', '${encodeURIComponent(info.title)}_video.m4s')">下载视频流</button>`:''}
+                ${bestA?`<button class="btn btn-outline btn-sm" onclick="downloadDashStream('${encodeURIComponent(bestA)}', '${encodeURIComponent(info.title)}_audio.m4s')">下载音频流</button>`:''}
+                <button class="btn btn-outline btn-sm" onclick="playInPage('${encodeURIComponent(info.bvid)}')">在线播放</button>
+            </div></div>`;
+    }
+
+    if (!info.playData && !info.dashData) {
+        downloadHtml = `<div class="error-msg">无法获取播放地址。可能原因：未设置Cookie / 版权内容 / 代理异常</div>
+        <div class="download-btns">
+            <button class="btn btn-outline btn-sm" onclick="retryParse('${info.bvid}')">重试</button>
+            <button class="btn btn-outline btn-sm" onclick="retryParseWithLowerQuality(${info.index})">降低清晰度</button>
+        </div>`;
+    }
+
+    card.innerHTML = `<div class="video-card-inner">
+        <img class="video-cover" src="${coverUrl}" onerror="this.onerror=null;if(this.src.includes('localhost')){this.src='${rawCover}';}else{this.style.display='none';this.parentNode.innerHTML='<div class=video-cover style=display:flex;align-items:center;justify-content:center;background:#e7e8ea;>&#127909;</div>';}">
+        <div class="video-info">
+            <div class="video-title">${info.title}</div>
+            <div class="video-meta">
+                <span>&#128100; ${info.owner?.name||'未知'}</span>
+                <span>&#128337; ${formatDuration(info.duration)}</span>
+                <span>&#128065; ${formatNum(info.stat?.view||0)}</span>
+                <span>&#128172; ${formatNum(info.stat?.danmaku||0)}</span>
+                <span>&#128197; ${pubTime}</span>
+                <span><a href="https://www.bilibili.com/video/${info.bvid}" target="_blank">${info.bvid}</a></span>
+            </div>
+            ${pagesHtml}${downloadHtml}${dashHtml}
+        </div></div>`;
+}
+
+function updateCardError(id, videoId, errorMsg) {
+    const card = document.getElementById(id);
+    if (!card) return;
+    card.className = 'video-card video-card-error';
+    card.innerHTML = `<div class="video-card-inner">
+        <div class="video-cover" style="display:flex;align-items:center;justify-content:center;background:#fff0f0;">
+            <span style="color:var(--error);font-size:24px;">&#10007;</span>
+        </div>
+        <div class="video-info">
+            <div class="video-title" style="color:var(--error);">${videoId} 解析失败</div>
+            <div class="error-msg">${errorMsg}</div>
+            <button class="btn btn-outline btn-sm" onclick="retryParse('${videoId}')">重试</button>
+        </div></div>`;
+}
+
+async function changePage(index, cid) {
+    if (!parsedVideos[index]) return;
+    const info = parsedVideos[index];
+    try { info.playData = await getPlayUrl(info.bvid, cid, getQuality()); } catch(e) { info.playData = null; }
+    if (getFormat() === 'dash') { try { info.dashData = await getDashPlayUrl(info.bvid, cid, getQuality()); } catch(e) { info.dashData = null; } }
+    updateCard(`card-${index}`, info);
+}
+async function reParse(index, qn) {
+    if (!parsedVideos[index]) return;
+    const info = parsedVideos[index];
+    try { info.playData = await getPlayUrl(info.bvid, info.cid, qn); } catch(e) { info.playData = null; }
+    try { info.dashData = await getDashPlayUrl(info.bvid, info.cid, qn); } catch(e) { info.dashData = null; }
+    updateCard(`card-${index}`, info);
+}
+async function retryParseWithLowerQuality(index) {
+    if (!parsedVideos[index]) return;
+    const info = parsedVideos[index];
+    try { info.playData = await getPlayUrl(info.bvid, info.cid, 16); } catch(e) { info.playData = null; }
+    updateCard(`card-${index}`, info);
+}
+function retryParse(videoId) {
+    document.getElementById('urlInput').value = videoId;
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelector('.tab').classList.add('active');
+    ['batch','up','collection'].forEach(n => document.getElementById('tab-'+n).style.display = n==='batch'?'block':'none');
+    startParse();
+}
+
+// ==================== 下载 ====================
+
+function getDownloadMode() { return document.getElementById('downloadMode').value; }
+
+// 构建同源下载 URL（通过 Vercel 后端转发，自动加 Referer）
+function buildDownloadProxyUrl(videoUrl, filename) {
+    let url = `/api/download?url=${encodeURIComponent(videoUrl)}&name=${encodeURIComponent(filename)}`;
+    if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
+    return url;
+}
+
+// 下载路径设置提示
+function showSaveDirTip() {
+    const ua = navigator.userAgent;
+    let guide = '';
+    if (ua.includes('Chrome')) {
+        guide = 'Chrome: 设置 → 下载内容 → 位置 → 更改\n或开启"下载前询问每个文件的保存位置"';
+    } else if (ua.includes('Firefox')) {
+        guide = 'Firefox: 设置 → 常规 → 下载 → 选择"总是询问保存在哪里"';
+    } else if (ua.includes('Edge')) {
+        guide = 'Edge: 设置 → 下载 → 更改位置\n或开启"下载前询问每个文件的保存位置"';
+    } else {
+        guide = '请在浏览器设置中修改默认下载目录或开启"下载前询问保存位置"';
+    }
+    alert('浏览器安全限制，网页无法直接指定下载路径。\n\n' + guide + '\n\n提示：使用"复制链接"模式配合IDM/迅雷可自由选择保存路径。');
+}
+
+// 通过代理下载视频（绕过Referer检查）
+async function downloadVideo(encodedUrl, encodedTitle) {
+    const url = decodeURIComponent(encodedUrl);
+    const title = decodeURIComponent(encodedTitle).replace(/[\\/:*?"<>|]/g, '_');
+    const mode = getDownloadMode();
+
+    if (mode === 'copy') {
+        copyLink(encodedUrl);
+        showToast('链接已复制，请粘贴到IDM/迅雷中下载', 'success');
+        return;
+    }
+
+    if (mode === 'open') {
+        window.open(url, '_blank');
+        return;
+    }
+
+    // 代理下载模式：通过同源 Vercel 后端转发（自动加 Referer/Cookie）
+    const downloadUrl = buildDownloadProxyUrl(url, title + '.mp4');
+    showToast('正在下载，大文件可能稍慢（Vercel 单次响应上限约 4.5MB，超大文件请用"复制链接"模式）', 'info');
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = title + '.mp4';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+async function downloadDashStream(encodedUrl, encodedTitle) {
+    const url = decodeURIComponent(encodedUrl);
+    const title = decodeURIComponent(encodedTitle).replace(/[\\/:*?"<>|]/g, '_');
+    const mode = getDownloadMode();
+
+    if (mode === 'copy') {
+        copyLink(encodedUrl);
+        showToast('链接已复制，请粘贴到IDM/迅雷中下载', 'success');
+        return;
+    }
+
+    if (mode === 'open') {
+        window.open(url, '_blank');
+        return;
+    }
+
+    // 通过同源 Vercel 后端转发
+    const downloadUrl = buildDownloadProxyUrl(url, title);
+    showToast('正在下载 DASH 流', 'success');
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = title;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+function copyLink(encodedUrl) {
+    const url = decodeURIComponent(encodedUrl);
+    navigator.clipboard.writeText(url).then(() => showToast('链接已复制，可用IDM/迅雷下载', 'success'))
+        .catch(() => {
+            const t = document.createElement('textarea'); t.value = url;
+            document.body.appendChild(t); t.select(); document.execCommand('copy');
+            document.body.removeChild(t); showToast('链接已复制', 'success');
+        });
+}
+
+// 在B站页面内播放视频（嵌入播放器）
+function playInPage(encodedBvid) {
+    const bvid = decodeURIComponent(encodedBvid);
+    const playUrl = `https://player.bilibili.com/player.html?bvid=${bvid}&high_quality=1&autoplay=1`;
+    window.open(playUrl, '_blank', 'width=800,height=600');
+}
+
+// 批量复制所有下载链接
+function copyAllLinks() {
+    if (parsedVideos.length === 0) { showToast('没有可下载的视频', 'error'); return; }
+    const links = [];
+    for (const info of parsedVideos) {
+        if (info.playData?.durl?.length > 0) {
+            links.push(info.playData.durl[0].url);
+        }
+    }
+    if (links.length === 0) { showToast('没有可下载的链接', 'error'); return; }
+    navigator.clipboard.writeText(links.join('\n')).then(() => {
+        showToast(`已复制 ${links.length} 个下载链接`, 'success');
+    }).catch(() => {
+        const t = document.createElement('textarea'); t.value = links.join('\n');
+        document.body.appendChild(t); t.select(); document.execCommand('copy');
+        document.body.removeChild(t); showToast(`已复制 ${links.length} 个链接`, 'success');
+    });
+}
+
+function downloadAll() {
+    if (parsedVideos.length === 0) { showToast('没有可下载的视频', 'error'); return; }
+    let count = 0;
+    for (const info of parsedVideos) {
+        if (info.playData?.durl?.length > 0) {
+            const url = info.playData.durl[0].url;
+            const title = info.title.replace(/[\\/:*?"<>|]/g, '_');
+            setTimeout(() => {
+                const downloadUrl = buildDownloadProxyUrl(url, title + '.mp4');
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = title + '.mp4';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }, count * 2000);
+            count++;
+        }
+    }
+    if (count > 0) showToast(`正在下载 ${count} 个视频，请耐心等待`, 'info');
+    else showToast('没有可下载的链接', 'error');
+}
+
+function clearAll() {
+    document.getElementById('urlInput').value = '';
+    document.getElementById('resultsList').innerHTML = '';
+    document.getElementById('resultsSection').classList.remove('active');
+    document.getElementById('progressSection').classList.remove('active');
+    parsedVideos = [];
+}
+
+// ==================== 初始化 ====================
+document.getElementById('urlInput').addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') startParse(); });
+window.addEventListener('load', async () => {
+    loadSavedCookie();
+    if (!cookieString) {
+        document.getElementById('cookiePanelBody').classList.add('open');
+        document.getElementById('cookieToggle').classList.add('open');
+    }
+    showToast('已部署到 Vercel，可直接使用（建议填入 SESSDATA 获取更高清晰度）', 'info');
+});
+</script>
+</body>
+</html>

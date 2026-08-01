@@ -1,0 +1,17 @@
+{
+  "name": "bilibili-vercel",
+  "version": "1.0.0",
+  "description": "B站视频解析 - Vercel 部署版（Edge Runtime + 同源前端）",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["bilibili", "vercel", "edge-functions", "wbi"],
+  "author": "",
+  "license": "MIT"
+}
