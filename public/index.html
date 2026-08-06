@@ -321,6 +321,7 @@
         <button class="tab active" onclick="switchTab('batch')">批量链接解析</button>
         <button class="tab" onclick="switchTab('up')">UP主主页解析</button>
         <button class="tab" onclick="switchTab('collection')">合集/列表解析</button>
+        <button class="tab" onclick="switchTab('dynamic')">动态图片解析</button>
     </div>
 
     <!-- 批量链接解析 -->
@@ -466,6 +467,26 @@
         </div>
         <div id="collectionInfo" style="margin-top:12px;"></div>
         <div id="collectionVideoList" style="margin-top:12px;"></div>
+    </div>
+
+    <!-- 动态图片解析 -->
+    <div class="input-section" id="tab-dynamic" style="display:none;">
+        <h2>哔哩哔哩动态图片解析</h2>
+        <div class="input-row">
+            <input type="text" id="dynamicInput" placeholder="输入动态链接或ID，例如：&#10;https://t.bilibili.com/123456789&#10;https://www.bilibili.com/opus/123456789&#10;或直接输入动态ID">
+            <div class="btn-group">
+                <button class="btn btn-primary" id="fetchDynamicBtn" onclick="fetchDynamic()">解析动态</button>
+                <button class="btn btn-success" onclick="copyDynamicImages()">一键复制所有图片链接</button>
+                <button class="btn btn-outline" onclick="clearDynamic()">清空</button>
+            </div>
+        </div>
+        <div class="settings-row">
+            <div class="setting-item" style="color:var(--text-secondary);font-size:12px;">
+                支持图文动态、转载动态中的图片，解析后可直接一键复制全部图片下载链接（每行一个）
+            </div>
+        </div>
+        <div id="dynamicInfo" style="margin-top:12px;"></div>
+        <div id="dynamicImageList" style="margin-top:12px;"></div>
     </div>
 
     <!-- Progress -->
@@ -731,7 +752,7 @@ function formatNum(n) { return n >= 10000 ? (n / 10000).toFixed(1) + '万' : Str
 function switchTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     event.target.classList.add('active');
-    ['batch', 'up', 'collection'].forEach(name => {
+    ['batch', 'up', 'collection', 'dynamic'].forEach(name => {
         document.getElementById('tab-' + name).style.display = name === tab ? 'block' : 'none';
     });
 }
@@ -1223,6 +1244,157 @@ function clearCollectionList() {
     document.getElementById('collectionInfo').innerHTML = '';
     document.getElementById('collectionVideoList').innerHTML = '';
     collectionVideoCache = [];
+}
+
+// ==================== 动态图片解析 ====================
+let dynamicImages = [];
+
+function extractDynamicId(text) {
+    text = text.trim();
+    let m = text.match(/t\.bilibili\.com\/(\d+)/);
+    if (m) return m[1];
+    m = text.match(/opus\/(\d+)/);
+    if (m) return m[1];
+    m = text.match(/dynamic_id[=:](\d+)/i);
+    if (m) return m[1];
+    m = text.match(/bilibili\.com\/read\/(\d+)/);
+    if (m) return m[1];
+    if (/^\d+$/.test(text)) return text;
+    return null;
+}
+
+function escHtml(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function normalizeImgUrl(src) {
+    if (!src) return '';
+    return src.startsWith('//') ? 'https:' + src : src;
+}
+
+// 从动态详情中提取所有图片 URL
+function extractDynamicImages(item) {
+    const images = [];
+    const major = (item && item.modules?.module_dynamic) ? item.modules.module_dynamic.major : null;
+
+    if (major?.type === 'MAJOR_TYPE_DRAW') {
+        (major.draw?.items || []).forEach(it => {
+            if (it.src) images.push(normalizeImgUrl(it.src));
+        });
+    } else if (major?.type === 'MAJOR_TYPE_OPUS') {
+        (major.opus?.pics || []).forEach(p => {
+            if (p.url) images.push(normalizeImgUrl(p.url));
+        });
+    }
+
+    // 动态正文中的图片节点
+    const nodes = item?.modules?.module_dynamic?.desc?.rich_text_nodes || [];
+    for (const node of nodes) {
+        if (node.type === 'RICH_TEXT_NODE_TYPE_IMAGE' && node.src) {
+            images.push(normalizeImgUrl(node.src));
+        }
+    }
+
+    // 避免重复
+    return images.filter((u, i, arr) => u && arr.indexOf(u) === i);
+}
+
+async function fetchDynamic() {
+    const input = document.getElementById('dynamicInput').value.trim();
+    if (!input) { showToast('请输入动态链接或ID', 'error'); return; }
+    const id = extractDynamicId(input);
+    if (!id) { showToast('无法识别动态ID，请输入动态链接或数字ID', 'error'); return; }
+
+    const btn = document.getElementById('fetchDynamicBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 解析中...';
+
+    try {
+        let url = `${backendPath('/dynamic')}?id=${id}`;
+        if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
+        const data = await doFetch(url, 15000);
+        if (data.code !== 0) throw new Error(data.message || `解析失败（错误码 ${data.code}）`);
+
+        const item = data.data?.item;
+        if (!item) throw new Error('动态数据为空');
+
+        const images = extractDynamicImages(item);
+        dynamicImages = images;
+        renderDynamic(images, item);
+        showToast(`解析到 ${images.length} 张图片`, images.length > 0 ? 'success' : 'warning');
+    } catch (err) {
+        showToast(`解析失败: ${err.message}`, 'error');
+    }
+    btn.disabled = false;
+    btn.innerHTML = '解析动态';
+}
+
+function renderDynamic(images, item) {
+    const author = item.modules?.module_author?.name || '未知作者';
+    const pubTs = item.modules?.module_author?.pub_ts;
+    const pubTime = pubTs ? new Date(pubTs * 1000).toLocaleString('zh-CN') : '';
+    const desc = item.modules?.module_dynamic?.desc?.text || '';
+
+    const infoHtml = `<div style="padding:14px;background:#f6f7f8;border-radius:8px;margin-bottom:12px;">
+        <div style="font-size:14px;font-weight:500;margin-bottom:6px;">${escHtml(author)}${pubTime ? ' · ' + pubTime : ''}</div>
+        ${desc ? `<div style="font-size:13px;color:var(--text);line-height:1.6;margin-bottom:8px;max-height:80px;overflow:hidden;">${escHtml(desc)}</div>` : ''}
+        <div style="font-size:12px;color:var(--text-secondary);">
+            共 <b>${images.length}</b> 张图片
+            ${images.length > 0 ? `<button class="btn btn-success btn-sm" style="margin-left:10px;" onclick="copyDynamicImages()">一键复制全部${images.length}个链接</button>` : ''}
+        </div>
+    </div>`;
+    document.getElementById('dynamicInfo').innerHTML = infoHtml;
+
+    let gridHtml = '';
+    if (images.length > 0) {
+        gridHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">';
+        images.forEach((imgUrl, idx) => {
+            const proxyUrl = `${backendPath('/api')}?url=${encodeURIComponent(imgUrl)}`;
+            gridHtml += `<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--card);">
+                <div style="position:relative;">
+                    <img src="${proxyUrl}" style="width:100%;aspect-ratio:1/1;object-fit:contain;display:block;background:#e7e8ea;" onerror="this.onerror=null;this.src='${imgUrl}';">
+                    <span style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,0.7);color:#fff;font-size:11px;padding:2px 6px;border-radius:4px;">${idx + 1}</span>
+                </div>
+                <div style="padding:8px;">
+                    <button class="btn btn-outline btn-sm" style="width:100%;" onclick="copyDynamicImage(${idx})">复制链接</button>
+                </div>
+            </div>`;
+        });
+        gridHtml += '</div>';
+    } else {
+        gridHtml = '<div style="text-align:center;padding:40px;color:var(--text-secondary);">该动态没有可解析的图片</div>';
+    }
+    document.getElementById('dynamicImageList').innerHTML = gridHtml;
+}
+
+// 一键复制所有图片下载链接（每行一个）
+function copyDynamicImages() {
+    if (dynamicImages.length === 0) { showToast('没有可复制的图片链接', 'error'); return; }
+    const text = dynamicImages.join('\n');
+    navigator.clipboard.writeText(text).then(() => {
+        showToast(`已复制 ${dynamicImages.length} 个图片下载链接`, 'success');
+    }).catch(() => {
+        const t = document.createElement('textarea'); t.value = text;
+        document.body.appendChild(t); t.select(); document.execCommand('copy');
+        document.body.removeChild(t); showToast(`已复制 ${dynamicImages.length} 个图片下载链接`, 'success');
+    });
+}
+
+function copyDynamicImage(idx) {
+    if (!dynamicImages[idx]) return;
+    navigator.clipboard.writeText(dynamicImages[idx]).then(() => showToast('图片下载链接已复制', 'success'))
+        .catch(() => {
+            const t = document.createElement('textarea'); t.value = dynamicImages[idx];
+            document.body.appendChild(t); t.select(); document.execCommand('copy');
+            document.body.removeChild(t); showToast('图片下载链接已复制', 'success');
+        });
+}
+
+function clearDynamic() {
+    document.getElementById('dynamicInput').value = '';
+    document.getElementById('dynamicInfo').innerHTML = '';
+    document.getElementById('dynamicImageList').innerHTML = '';
+    dynamicImages = [];
 }
 
 // ==================== 卡片渲染 ====================

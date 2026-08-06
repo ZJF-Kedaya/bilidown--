@@ -10,6 +10,7 @@
  *   /api/api?url=...         通用 API 代理（自动 WBI 签名）
  *   /api/up?mid=...          UP主视频列表
  *   /api/season?mid=...      合集/列表
+ *   /api/dynamic?id=...      动态详情（提取图片）
  *   /api/download?url=...    视频下载
  */
 
@@ -590,6 +591,29 @@ export default async function handler(request) {
         return jsonResponse(data, resp.status);
       } catch {
         return jsonResponse({ code: -1, message: '响应解析失败' }, resp.status);
+      }
+    }
+
+    if (path === '/api/dynamic' || path === '/dynamic') {
+      const id = url.searchParams.get('id');
+      if (!id) return jsonResponse({ code: 400, message: '缺少id参数' }, 400);
+      const cookie = url.searchParams.get('cookie') || '';
+
+      // 动态详情 API 需要 WBI 签名
+      const params = { id, platform: 'web', web_location: '333.999' };
+      const signedUrl = await signUrl('https://api.bilibili.com/x/polymer/web-dynamic/v1/detail', params, cookie);
+      const resp = await proxyFetch(signedUrl, cookie, { referer: 'https://www.bilibili.com/' });
+
+      if (resp.status === 412) {
+        return jsonResponse({ code: -412, message: '动态解析被风控拦截(412)。建议填入SESSDATA或稍后重试。' }, 412);
+      }
+
+      const text = await resp.text();
+      try {
+        const data = JSON.parse(text);
+        return jsonResponse(data, resp.status);
+      } catch {
+        return jsonResponse({ code: -1, message: '响应解析失败', raw: text.substring(0, 300) }, resp.status);
       }
     }
 

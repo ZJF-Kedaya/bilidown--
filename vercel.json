@@ -8,6 +8,7 @@
     { "source": "/api", "destination": "/api/api" },
     { "source": "/up", "destination": "/api/up" },
     { "source": "/season", "destination": "/api/season" },
+    { "source": "/dynamic", "destination": "/api/dynamic" },
     { "source": "/download", "destination": "/api/download" }
   ]
 }
