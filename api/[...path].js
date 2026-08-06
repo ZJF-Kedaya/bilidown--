@@ -611,6 +611,15 @@ export default async function handler(request) {
       // 传入的是 B站 视频页面链接 → 自动解析为可下载地址（返回 code 0 或业务错误码）
       if (isVideoPageUrl(targetUrl)) {
         const result = await handleVideoPage(targetUrl, cookie, qn);
+        // 把原始 CDN 直链改写为本后端 /download 代理链接（后端会带 Referer 绕过防盗链）
+        if (result && result.code === 0 && result.data && Array.isArray(result.data.durl)) {
+          const origin = url.origin;
+          const title = (result.data.title || 'video').replace(/[\\/:*?"<>|]/g, '_');
+          result.data.durl = result.data.durl.map(d => ({
+            size: d.size,
+            url: `${origin}/download?url=${encodeURIComponent(d.url)}&name=${encodeURIComponent(title + '.mp4')}`,
+          }));
+        }
         if (result) return jsonResponse(result, 200);
       }
       return handleApiProxy(targetUrl, cookie);
