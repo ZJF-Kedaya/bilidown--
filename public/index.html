@@ -1579,10 +1579,7 @@ function buildDownloadProxyUrl(videoUrl, filename) {
     return url;
 }
 
-// 浏览器直接下载大文件（分片 + File System Access API / StreamSaver 降级）
-// 每片 3MB，绕过 Vercel Edge 4MB 单次响应限制（4MB 分片会因 HTTP 头开销被截断导致文件空洞）
-const browserChunkSize = 3 * 1024 * 1024;
-
+// 浏览器直接下载（顺序流式拉取，经 Vercel Edge 流式转发，不受单次响应大小限制）
 async function browserDownload(videoUrl, filename, progressEl) {
     // 进度条控制
     const dp = {
@@ -1603,7 +1600,7 @@ async function browserDownload(videoUrl, filename, progressEl) {
         return `${Math.floor(s / 60)}分${(s % 60).toFixed(0)}秒`;
     };
     const showDp = (visible) => { if (dp.el) dp.el.style.display = visible ? 'block' : 'none'; };
-    const updateDp = (downloaded, total, chunkIdx, chunkTotal, elapsedMs) => {
+    const updateDp = (downloaded, total, elapsedMs) => {
         if (!dp.el) return;
         const pct = total > 0 ? (downloaded / total * 100) : 0;
         dp.bar.style.width = pct + '%';
@@ -1611,7 +1608,7 @@ async function browserDownload(videoUrl, filename, progressEl) {
         dp.size.textContent = total > 0 ? `${fmtMB(downloaded)} / ${fmtMB(total)} MB` : `${fmtMB(downloaded)} MB`;
         const speed = elapsedMs > 0 ? (downloaded / 1024 / 1024 / (elapsedMs / 1000)) : 0;
         dp.speed.textContent = `${speed.toFixed(2)} MB/s`;
-        dp.chunk.textContent = chunkTotal > 0 ? `分片 ${chunkIdx}/${chunkTotal}` : '流式下载';
+        dp.chunk.textContent = '流式下载';
         const remain = speed > 0 && total > 0 ? (total - downloaded) / 1024 / 1024 / speed : -1;
         dp.time.textContent = total > 0 ? `剩余 ${fmtTime(remain)}` : '未知大小';
     };
@@ -1619,36 +1616,48 @@ async function browserDownload(videoUrl, filename, progressEl) {
     const downloadUrl = buildDownloadProxyUrl(videoUrl, filename);
     if (dp.title) dp.title.textContent = filename;
     showDp(true);
-    updateDp(0, 0, 0, 0, 0);
-    showProgress('正在获取文件信息...');
-
-    // 1. 发第一个分片请求，从 Content-Range 获取总大小，并缓存后端解析出的最终 CDN URL
-    let totalSize = 0;
-    let firstChunk = null;
-    let resolvedUrl = null;
-    let serverSupportsRange = false;
-    const makeRangeHeaders = (start, end, resolved) => {
-        const h = { 'Range': `bytes=${start}-${end}` };
-        if (resolved) h['X-Resolved-Url'] = resolved;
-        return h;
-    };
+    updateDp(0, 0, 0);
+    showProgress('正在下载...');
 
     try {
-        const firstResp = await fetch(downloadUrl, {
-            headers: makeRangeHeaders(0, browserChunkSize - 1)
-        });
-        resolvedUrl = firstResp.headers.get('X-Resolved-Url');
-        if (firstResp.status === 206) {
-            serverSupportsRange = true;
-            const cr = firstResp.headers.get('Content-Range');
-            if (cr) {
-                const m = cr.match(/\/(\d+)/);
-                if (m) totalSize = parseInt(m[1]);
+        const resp = await fetch(downloadUrl);
+        if (!resp.ok) throw new Error(`下载请求失败: HTTP ${resp.status}`);
+        const total = parseInt(resp.headers.get('Content-Length') || '0', 10);
+
+        // FSA 可用则顺序写入磁盘（低内存）；否则缓冲为 Blob
+        let writable = null;
+        if ('showSaveFilePicker' in window) {
+            try {
+                const ext = (filename.match(/\.[^.]+$/)?.[0] || '.mp4');
+                const fileHandle = await window.showSaveFilePicker({
+                    suggestedName: filename,
+                    types: [{ description: '视频', accept: { 'video/mp4': [ext] } }]
+                });
+                writable = await fileHandle.createWritable();
+            } catch (e) {
+                if (e.name === 'AbortError') { showDp(false); showProgress('已取消'); return; }
+                // 用户拒绝或不支持，降级到 Blob
             }
-        } else if (firstResp.status === 200) {
-            // 服务器忽略 Range，返回完整文件；直接走单文件下载
-            const blob = await firstResp.blob();
-            showDp(false);
+        }
+
+        // 顺序读取流，写入正确位置，避免分片拼接错位
+        const reader = resp.body.getReader();
+        const parts = writable ? null : [];
+        let downloaded = 0;
+        const startTime = Date.now();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (writable) await writable.write(value);
+            else parts.push(value);
+            downloaded += value.byteLength;
+            updateDp(downloaded, total, Date.now() - startTime);
+        }
+
+        if (writable) {
+            await writable.close();
+        } else {
+            const blob = new Blob(parts, { type: 'video/mp4' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -1657,104 +1666,15 @@ async function browserDownload(videoUrl, filename, progressEl) {
             a.click();
             document.body.removeChild(a);
             setTimeout(() => URL.revokeObjectURL(url), 10000);
-            showToast(`下载完成: ${filename} (${fmtMB(blob.size)}MB)`, 'success');
-            return;
-        } else {
-            throw new Error(`首片请求失败: HTTP ${firstResp.status}`);
         }
-        firstChunk = { start: 0, buf: await firstResp.arrayBuffer() };
+        if (dp.bar) dp.bar.style.width = '100%';
+        if (dp.percent) dp.percent.textContent = '100%';
+        if (dp.time) dp.time.textContent = '完成';
+        showToast(`下载完成: ${filename} (${fmtMB(downloaded)}MB)`, 'success');
     } catch (e) {
-        // 第一片失败，降级为直接下载
         showDp(false);
-        showProgress('直接下载...');
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        return;
+        throw e;
     }
-
-    if (!serverSupportsRange || !totalSize) {
-        showDp(false);
-        throw new Error('服务器不支持 Range 分片，无法保证大文件完整性');
-    }
-
-    // 2. 大文件分片下载
-    const supportsFSAccess = 'showSaveFilePicker' in window;
-    let writable = null, blobParts = new Array(Math.ceil(totalSize / browserChunkSize));
-    const totalMB = fmtMB(totalSize);
-
-    if (supportsFSAccess) {
-        try {
-            const ext = filename.match(/\.[^.]+$/)?.[0] || '.mp4';
-            const fileHandle = await window.showSaveFilePicker({
-                suggestedName: filename,
-                types: [{ description: '视频', accept: { 'video/mp4': [ext] } }]
-            });
-            writable = await fileHandle.createWritable();
-        } catch (e) {
-            if (e.name === 'AbortError') { showDp(false); showProgress('已取消'); return; }
-            // 用户拒绝或不支持，降级到 Blob
-        }
-    }
-
-    // 3. 写入第一片数据到正确位置
-    let downloaded = firstChunk.buf.byteLength;
-    if (writable) {
-        await writable.write({ type: 'write', position: firstChunk.start, data: firstChunk.buf });
-    } else {
-        blobParts[0] = firstChunk.buf;
-    }
-    firstChunk = null;
-
-    // 4. 继续拉取剩余分片（全部使用同一个 resolved CDN URL）
-    const totalChunks = Math.ceil(totalSize / browserChunkSize);
-    const startTime = Date.now();
-    updateDp(downloaded, totalSize, 1, totalChunks, 0);
-
-    for (let i = 1; i < totalChunks; i++) {
-        const start = i * browserChunkSize;
-        const end = Math.min(start + browserChunkSize - 1, totalSize - 1);
-
-        const resp = await fetch(downloadUrl, {
-            headers: makeRangeHeaders(start, end, resolvedUrl)
-        });
-        if (resp.status !== 206) {
-            throw new Error(`分片 ${i + 1} 失败: HTTP ${resp.status}（服务器未返回 206 Partial Content）`);
-        }
-        const buf = await resp.arrayBuffer();
-        if (writable) {
-            await writable.write({ type: 'write', position: start, data: buf });
-        } else {
-            blobParts[i] = buf;
-        }
-        downloaded += buf.byteLength;
-        const elapsed = Date.now() - startTime;
-        updateDp(downloaded, totalSize, i + 1, totalChunks, elapsed);
-    }
-
-    // 5. 收尾
-    if (writable) {
-        await writable.close();
-    } else {
-        // 过滤空槽（理论上不应有）
-        const parts = blobParts.filter(b => b);
-        const blob = new Blob(parts, { type: 'video/mp4' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
-    }
-    if (dp.bar) dp.bar.style.width = '100%';
-    if (dp.percent) dp.percent.textContent = '100%';
-    if (dp.time) dp.time.textContent = '完成';
-    showToast(`下载完成: ${filename} (${totalMB}MB)`, 'success');
     setTimeout(() => showDp(false), 2000);
 }
 
