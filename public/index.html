@@ -340,8 +340,8 @@
                 <select id="qualitySelect">
                     <option value="16">360P 流畅</option>
                     <option value="32">480P 清晰</option>
-                    <option value="64">720P 高清</option>
-                    <option value="80" selected>1080P 超清(需登录)</option>
+                    <option value="64" selected>720P 高清</option>
+                    <option value="80">1080P 超清(需登录)</option>
                     <option value="112">1080P+ (需大会员)</option>
                     <option value="116">1080P 60帧(需大会员)</option>
                 </select>
@@ -769,25 +769,12 @@ async function getVideoInfoByAid(aid) {
     return data.data;
 }
 async function getPlayUrl(bvid, cid, qn) {
-    // fnval=16（DASH）才能拿到 1080P 及以上清晰度；fnval=1(MP4) 最高只到 720P
-    const data = await fetchPlayUrl(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&fnval=16&fourk=1&platform=pc`);
+    const data = await fetchPlayUrl(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&fnval=1&fourk=1&platform=pc`);
     return data.data;
 }
 async function getDashPlayUrl(bvid, cid, qn) {
     const data = await fetchPlayUrl(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&fnval=16&fourk=1&platform=pc`);
     return data.data;
-}
-
-// 从 DASH 响应中取指定画质的视频流 / 音频流 URL
-function getDashStreamUrl(playData, type) {
-    if (!playData || !playData.dash) return '';
-    const qn = playData.quality;
-    if (type === 'video') {
-        const v = (playData.dash.video || []).find(x => x.id === qn) || playData.dash.video[0];
-        return v ? (v.baseUrl || v.base_url || '') : '';
-    }
-    const a = (playData.dash.audio || [])[0];
-    return a ? (a.baseUrl || a.base_url || '') : '';
 }
 
 // ==================== API: UP主视频列表 ====================
@@ -1438,6 +1425,7 @@ function updateCard(id, info) {
 
     let downloadHtml = '';
     if (info.playData) {
+        const durl = info.playData.durl || [];
         const quality = info.playData.quality || 0;
         const acceptQuality = info.playData.accept_quality || [];
         const acceptDesc = info.playData.accept_description || [];
@@ -1445,36 +1433,17 @@ function updateCard(id, info) {
             const qnVal = acceptQuality[idx];
             return `<span class="quality-tag ${qnVal===quality?'active':''}" onclick="reParse(${info.index}, ${qnVal})">${desc}</span>`;
         }).join('');
-
-        const durl = info.playData.durl || [];
-        if (durl.length > 0) {
-            const totalSize = durl.reduce((s,d) => s+(d.size||0), 0);
-            const videoUrl = durl[0].url;
-            const backupUrl = durl[0].backup_url?.length>0 ? durl[0].backup_url[0] : '';
-            downloadHtml = `<div class="quality-tags">${qualityTags}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">画质: ${quality} · 大小: ${formatSize(totalSize)}${durl.length>1?' · '+durl.length+'段':''}</div>
-            <div class="download-btns">
-                <button class="btn btn-primary btn-sm" onclick="downloadVideo('${encodeURIComponent(videoUrl)}', '${encodeURIComponent(info.title)}')">下载视频</button>
-                ${backupUrl?`<button class="btn btn-outline btn-sm" onclick="downloadVideo('${encodeURIComponent(backupUrl)}', '${encodeURIComponent(info.title)}')">备用线路</button>`:''}
-                <button class="btn btn-outline btn-sm" onclick="playInPage('${encodeURIComponent(info.bvid)}')">在线播放</button>
-                <button class="btn btn-outline btn-sm" onclick="copyLink('${encodeURIComponent(videoUrl)}')">复制链接</button>
-            </div>`;
-        } else if (info.playData.dash) {
-            const dash = info.playData.dash;
-            const v = (dash.video || []).find(x => x.id === quality) || dash.video[0];
-            const a = (dash.audio || [])[0];
-            const videoUrl = v ? (v.baseUrl || v.base_url || '') : '';
-            const audioUrl = a ? (a.baseUrl || a.base_url || '') : '';
-            downloadHtml = `<div class="quality-tags">${qualityTags}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">画质: ${quality} · ${v?(v.width+'x'+v.height):''} ${v?.codecs||''}${a?' · 音频 '+a.codecs:''}</div>
-            <div class="download-btns">
-                <button class="btn btn-primary btn-sm" onclick="downloadDashMerged('${encodeURIComponent(videoUrl)}','${encodeURIComponent(audioUrl)}','${encodeURIComponent(info.title)}')">下载完整视频(合并)</button>
-                ${videoUrl?`<button class="btn btn-outline btn-sm" onclick="downloadDashStream('${encodeURIComponent(videoUrl)}', '${encodeURIComponent(info.title+'_video.m4s')}')">仅视频流</button>`:''}
-                ${audioUrl?`<button class="btn btn-outline btn-sm" onclick="downloadDashStream('${encodeURIComponent(audioUrl)}', '${encodeURIComponent(info.title+'_audio.m4s')}')">仅音频流</button>`:''}
-                <button class="btn btn-outline btn-sm" onclick="playInPage('${encodeURIComponent(info.bvid)}')">在线播放</button>
-            </div>
-            <div class="dash-info" style="margin-top:8px;">1080P及以上为DASH分离流。“下载完整视频”会在浏览器本地用 ffmpeg(WASM) 合并，直接得到完整mp4（大文件较慢、较占内存）。</div>`;
-        }
+        const totalSize = durl.reduce((s,d) => s+(d.size||0), 0);
+        const videoUrl = durl.length>0 ? durl[0].url : '';
+        const backupUrl = durl.length>0 && durl[0].backup_url?.length>0 ? durl[0].backup_url[0] : '';
+        downloadHtml = `<div class="quality-tags">${qualityTags}</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">画质: ${quality} · 大小: ${formatSize(totalSize)}${durl.length>1?' · '+durl.length+'段':''}</div>
+        <div class="download-btns">
+            <button class="btn btn-primary btn-sm" onclick="downloadVideo('${encodeURIComponent(videoUrl)}', '${encodeURIComponent(info.title)}')">下载视频</button>
+            ${backupUrl?`<button class="btn btn-outline btn-sm" onclick="downloadVideo('${encodeURIComponent(backupUrl)}', '${encodeURIComponent(info.title)}')">备用线路</button>`:''}
+            <button class="btn btn-outline btn-sm" onclick="playInPage('${encodeURIComponent(info.bvid)}')">在线播放</button>
+            <button class="btn btn-outline btn-sm" onclick="copyLink('${encodeURIComponent(videoUrl)}')">复制链接</button>
+        </div>`;
     }
 
     let dashHtml = '';
@@ -1783,64 +1752,6 @@ async function downloadDashStream(encodedUrl, encodedTitle) {
     }
 }
 
-// ==================== ffmpeg.wasm 合并（一键下载完整视频） ====================
-let ffmpegLoadPromise = null;
-async function ensureFFmpeg() {
-    if (ffmpegLoadPromise) return ffmpegLoadPromise;
-    ffmpegLoadPromise = (async () => {
-        const { FFmpeg } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm');
-        const { toBlobURL } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm');
-        const ffmpeg = new FFmpeg();
-        await ffmpeg.load({
-            coreURL: await toBlobURL('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js', 'text/javascript'),
-            wasmURL: await toBlobURL('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm', 'application/wasm'),
-        });
-        return ffmpeg;
-    })();
-    return ffmpegLoadPromise;
-}
-
-// 下载完整视频：浏览器本地用 ffmpeg(WASM) 合并视频流+音频流，直接得到完整 mp4
-async function downloadDashMerged(encVideoUrl, encAudioUrl, encTitle) {
-    const videoUrl = decodeURIComponent(encVideoUrl);
-    const audioUrl = decodeURIComponent(encAudioUrl);
-    const title = decodeURIComponent(encTitle).replace(/[\\/:*?"<>|]/g, '_');
-    if (!videoUrl || !audioUrl) { showToast('缺少音视频流', 'error'); return; }
-    const mode = getDownloadMode();
-    if (mode === 'copy') {
-        const mergedProxy = `${backendPath('/download')}?url=${encodeURIComponent(videoUrl)}&name=${encodeURIComponent(title+'_video.m4s')}`;
-        copyLink(encodeURIComponent(mergedProxy));
-        showToast('已复制视频流链接（合并需使用“浏览器直接下载”模式）', 'success');
-        return;
-    }
-    showToast('正在下载音视频流并加载 ffmpeg，请稍候...', 'info');
-    try {
-        const ffmpeg = await ensureFFmpeg();
-        const [vRes, aRes] = await Promise.all([
-            fetch(buildDownloadProxyUrl(videoUrl, title + '_v.m4s')),
-            fetch(buildDownloadProxyUrl(audioUrl, title + '_a.m4s')),
-        ]);
-        if (!vRes.ok || !aRes.ok) throw new Error(`流下载失败 HTTP ${vRes.status}/${aRes.status}`);
-        showToast('正在合并音视频（1080P大文件较慢，请耐心等待）...', 'info');
-        await ffmpeg.writeFile('video.m4s', new Uint8Array(await vRes.arrayBuffer()));
-        await ffmpeg.writeFile('audio.m4s', new Uint8Array(await aRes.arrayBuffer()));
-        await ffmpeg.exec(['-i', 'video.m4s', '-i', 'audio.m4s', '-c', 'copy', 'output.mp4']);
-        const data = await ffmpeg.readFile('output.mp4');
-        // 清理 ffmpeg 虚拟文件，释放内存
-        try { await ffmpeg.deleteFile('video.m4s'); await ffmpeg.deleteFile('audio.m4s'); await ffmpeg.deleteFile('output.mp4'); } catch (e) {}
-        const blob = new Blob([data.buffer], { type: 'video/mp4' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = title + '.mp4';
-        document.body.appendChild(a); a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
-        showToast('合并完成，已开始下载', 'success');
-    } catch (e) {
-        showToast(`合并失败: ${e.message}（可改用“仅视频流/仅音频流”用本地ffmpeg合并）`, 'error');
-    }
-}
-
 function copyLink(encodedUrl) {
     const url = decodeURIComponent(encodedUrl);
     navigator.clipboard.writeText(url).then(() => showToast('链接已复制，可用IDM/迅雷下载', 'success'))
@@ -1865,9 +1776,6 @@ function copyAllLinks() {
     for (const info of parsedVideos) {
         if (info.playData?.durl?.length > 0) {
             links.push(info.playData.durl[0].url);
-        } else {
-            const vUrl = getDashStreamUrl(info.playData, 'video');
-            if (vUrl) links.push(vUrl);
         }
     }
     if (links.length === 0) { showToast('没有可下载的链接', 'error'); return; }
@@ -1882,12 +1790,12 @@ function copyAllLinks() {
 
 async function downloadAll() {
     if (parsedVideos.length === 0) { showToast('没有可下载的视频', 'error'); return; }
-    const downloadables = parsedVideos.filter(v => (v.playData?.durl?.length > 0) || !!getDashStreamUrl(v.playData, 'video'));
+    const downloadables = parsedVideos.filter(v => v.playData?.durl?.length > 0);
     if (downloadables.length === 0) { showToast('没有可下载的链接', 'error'); return; }
     showToast(`开始批量下载 ${downloadables.length} 个视频（依次进行）`, 'info');
     for (let i = 0; i < downloadables.length; i++) {
         const info = downloadables[i];
-        const url = info.playData.durl?.length > 0 ? info.playData.durl[0].url : getDashStreamUrl(info.playData, 'video');
+        const url = info.playData.durl[0].url;
         const title = info.title.replace(/[\\/:*?"<>|]/g, '_');
         showToast(`[${i + 1}/${downloadables.length}] ${title}`, 'info');
         try {
