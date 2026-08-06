@@ -34,6 +34,19 @@ let wbiKeysPromise = null;
 let anonCookieCache = { cookie: '', update_time: 0 };
 let anonCookiePromise = null;
 
+// 默认登录 Cookie：通过 Vercel 环境变量 DEFAULT_SESSDATA 配置。
+// 仅内置 SESSDATA（不含完整敏感 Cookie），当请求未显式传 cookie 时作为兜底，
+// 可缓解"缺登录态"导致的 412；用户显式传入的 cookie 优先。
+const DEFAULT_COOKIE = (() => {
+  const sess = (typeof process !== 'undefined' && process.env.DEFAULT_SESSDATA) || '';
+  return sess ? 'SESSDATA=' + sess : '';
+})();
+
+// 返回生效的额外 Cookie：优先用请求传来的，否则用内置默认
+function effectiveCookie(requestCookie) {
+  return requestCookie || DEFAULT_COOKIE;
+}
+
 // 轮换 UA 池，避免单一 UA 被风控标记
 const UA_POOL = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -488,6 +501,7 @@ export default async function handler(request) {
         wbi: !!wbiKeysCache.img_key,
         wbiAge: wbiAge,
         hasAnonCookie: !!anonCookieCache.cookie,
+        hasDefaultCookie: !!DEFAULT_COOKIE,
         anonCookieAge: anonAge,
         timestamp: now,
       });
@@ -516,7 +530,7 @@ export default async function handler(request) {
     if (path === '/api/api' || path === '/api') {
       const targetUrl = url.searchParams.get('url');
       if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
-      const cookie = url.searchParams.get('cookie') || '';
+      const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
       return handleApiProxy(targetUrl, cookie);
     }
 
@@ -524,7 +538,7 @@ export default async function handler(request) {
       const mid = url.searchParams.get('mid');
       if (!mid) return jsonResponse({ code: 400, message: '缺少mid参数' }, 400);
 
-      const cookie = url.searchParams.get('cookie') || '';
+      const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
       const params = {
         mid,
         pn: url.searchParams.get('pn') || '1',
@@ -558,7 +572,7 @@ export default async function handler(request) {
       const mid = url.searchParams.get('mid') || '';
       const seasonId = url.searchParams.get('season_id') || '';
       const seriesId = url.searchParams.get('series_id') || '';
-      const cookie = url.searchParams.get('cookie') || '';
+      const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
 
       let apiUrl;
       if (seasonId) {
@@ -597,7 +611,7 @@ export default async function handler(request) {
     if (path === '/api/dynamic' || path === '/dynamic') {
       const id = url.searchParams.get('id');
       if (!id) return jsonResponse({ code: 400, message: '缺少id参数' }, 400);
-      const cookie = url.searchParams.get('cookie') || '';
+      const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
 
       // 动态详情 API 需要 WBI 签名
       const params = { id, platform: 'web', web_location: '333.999' };
@@ -620,7 +634,7 @@ export default async function handler(request) {
     if (path === '/api/download' || path === '/download') {
       const targetUrl = url.searchParams.get('url');
       if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
-      const cookie = url.searchParams.get('cookie') || '';
+      const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
       const filename = url.searchParams.get('name') || 'video.mp4';
       const range = request.headers.get('Range'); // 支持 Range 分片请求
       let resolvedUrl = request.headers.get('X-Resolved-Url'); // 前端提供的已解析 CDN URL
