@@ -1580,10 +1580,10 @@ function buildDownloadProxyUrl(videoUrl, filename) {
 }
 
 // 浏览器直接下载大文件（分片 + File System Access API / StreamSaver 降级）
-// 每片 4MB，绕过 Vercel Edge 4.5MB 单次响应限制
-async function browserDownload(videoUrl, filename, progressEl) {
-    const CHUNK = 4 * 1024 * 1024; // 4MB per chunk
+// 每片 3MB，绕过 Vercel Edge 4MB 单次响应限制（4MB 分片会因 HTTP 头开销被截断导致文件空洞）
+const browserChunkSize = 3 * 1024 * 1024;
 
+async function browserDownload(videoUrl, filename, progressEl) {
     // 进度条控制
     const dp = {
         el: document.getElementById('downloadProgress'),
@@ -1635,7 +1635,7 @@ async function browserDownload(videoUrl, filename, progressEl) {
 
     try {
         const firstResp = await fetch(downloadUrl, {
-            headers: makeRangeHeaders(0, CHUNK - 1)
+            headers: makeRangeHeaders(0, browserChunkSize - 1)
         });
         resolvedUrl = firstResp.headers.get('X-Resolved-Url');
         if (firstResp.status === 206) {
@@ -1683,7 +1683,7 @@ async function browserDownload(videoUrl, filename, progressEl) {
 
     // 2. 大文件分片下载
     const supportsFSAccess = 'showSaveFilePicker' in window;
-    let writable = null, blobParts = new Array(Math.ceil(totalSize / CHUNK));
+    let writable = null, blobParts = new Array(Math.ceil(totalSize / browserChunkSize));
     const totalMB = fmtMB(totalSize);
 
     if (supportsFSAccess) {
@@ -1710,13 +1710,13 @@ async function browserDownload(videoUrl, filename, progressEl) {
     firstChunk = null;
 
     // 4. 继续拉取剩余分片（全部使用同一个 resolved CDN URL）
-    const totalChunks = Math.ceil(totalSize / CHUNK);
+    const totalChunks = Math.ceil(totalSize / browserChunkSize);
     const startTime = Date.now();
     updateDp(downloaded, totalSize, 1, totalChunks, 0);
 
     for (let i = 1; i < totalChunks; i++) {
-        const start = i * CHUNK;
-        const end = Math.min(start + CHUNK - 1, totalSize - 1);
+        const start = i * browserChunkSize;
+        const end = Math.min(start + browserChunkSize - 1, totalSize - 1);
 
         const resp = await fetch(downloadUrl, {
             headers: makeRangeHeaders(start, end, resolvedUrl)
