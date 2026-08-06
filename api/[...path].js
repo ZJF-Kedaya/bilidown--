@@ -480,6 +480,81 @@ async function handleApiProxy(targetUrl, cookie) {
   });
 }
 
+// 判断是否为 B站 视频页面链接（含短链 b23.tv）
+function isVideoPageUrl(u) {
+  return /\/video\/BV|bilibili\.com\/video\/|b23\.tv/i.test(u || '');
+}
+
+function extractBvid(text) {
+  const m = String(text).match(/BV[a-zA-Z0-9]+/);
+  return m ? m[0] : null;
+}
+
+// 跟随短链重定向，拿到最终页面 URL（用于从 b23.tv 提取 BV 号）
+async function resolveFinalPageUrl(targetUrl, cookie) {
+  try {
+    const headers = { ...API_HEADERS };
+    const anonCookie = await getAnonCookie();
+    const cookieParts = [anonCookie];
+    if (cookie) cookieParts.push(cookie);
+    headers['Cookie'] = cookieParts.join('; ');
+    const resp = await fetch(targetUrl, { headers: safeHeaders(headers), redirect: 'follow' });
+    return resp.url || targetUrl;
+  } catch (e) {
+    return targetUrl;
+  }
+}
+
+// 自动解析视频页面：view（拿 cid）→ playurl（拿直链）
+async function handleVideoPage(targetUrl, cookie, qn) {
+  let finalUrl = targetUrl;
+  if (targetUrl.includes('b23.tv')) {
+    finalUrl = await resolveFinalPageUrl(targetUrl, cookie);
+  }
+  const bvid = extractBvid(finalUrl);
+  if (!bvid) return null;
+
+  // 第1步：view 拿 cid
+  const viewUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`;
+  const viewResp = await proxyFetch(viewUrl, cookie, { referer: 'https://www.bilibili.com/' });
+  const viewText = await viewResp.text();
+  let viewData;
+  try { viewData = JSON.parse(viewText); } catch { return null; }
+  if (viewData.code !== 0 || !viewData.data) {
+    return { code: viewData.code, message: viewData.message || '获取视频信息失败' };
+  }
+  const info = viewData.data;
+  const cid = info.cid;
+
+  // 第2步：playurl 拿直链
+  const playUrl = `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&fnval=1&fourk=1&platform=pc`;
+  const playResp = await proxyFetch(playUrl, cookie, { referer: 'https://www.bilibili.com/' });
+  const playText = await playResp.text();
+  let playData;
+  try { playData = JSON.parse(playText); } catch { return null; }
+  if (!playData || playData.code !== 0) {
+    return { code: playData ? playData.code : -1, message: (playData && playData.message) || '获取播放地址失败' };
+  }
+
+  return {
+    code: 0,
+    message: 'ok',
+    data: {
+      bvid,
+      cid,
+      title: info.title,
+      duration: info.duration,
+      pic: info.pic,
+      owner: info.owner,
+      pages: info.pages,
+      quality: playData.data.quality,
+      accept_quality: playData.data.accept_quality,
+      accept_description: playData.data.accept_description,
+      durl: playData.data.durl || [],
+    },
+  };
+}
+
 // Vercel Edge Function 入口
 export default async function handler(request) {
   const url = new URL(request.url);
@@ -531,6 +606,13 @@ export default async function handler(request) {
       const targetUrl = url.searchParams.get('url');
       if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
       const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
+      const qn = parseInt(url.searchParams.get('qn') || '64', 10);
+
+      // 传入的是 B站 视频页面链接 → 自动解析为可下载地址（返回 code 0 或业务错误码）
+      if (isVideoPageUrl(targetUrl)) {
+        const result = await handleVideoPage(targetUrl, cookie, qn);
+        if (result) return jsonResponse(result, 200);
+      }
       return handleApiProxy(targetUrl, cookie);
     }
 
