@@ -357,6 +357,7 @@
                 <label>下载方式：</label>
                 <select id="downloadMode">
                     <option value="proxy" selected>浏览器直接下载(推荐)</option>
+                    <option value="fast">分片加速下载(更快)</option>
                     <option value="copy">复制下载链接</option>
                     <option value="open">新标签页打开</option>
                 </select>
@@ -1678,6 +1679,114 @@ async function browserDownload(videoUrl, filename, progressEl) {
     setTimeout(() => showDp(false), 2000);
 }
 
+// 分片加速下载：并行拉取多个字节段，每个分片都重新解析 CDN 地址（不复用），避免错位
+async function fastDownload(videoUrl, filename, progressEl) {
+    const dp = {
+        el: document.getElementById('downloadProgress'),
+        title: document.getElementById('dpTitle'),
+        percent: document.getElementById('dpPercent'),
+        bar: document.getElementById('dpBar'),
+        size: document.getElementById('dpSize'),
+        speed: document.getElementById('dpSpeed'),
+        chunk: document.getElementById('dpChunk'),
+        time: document.getElementById('dpTime'),
+    };
+    const showProgress = (msg) => { if (progressEl) progressEl.textContent = msg; };
+    const fmtMB = (b) => (b / 1024 / 1024).toFixed(1);
+    const fmtTime = (s) => {
+        if (s < 0 || !isFinite(s)) return '--';
+        if (s < 60) return `${s.toFixed(0)}秒`;
+        return `${Math.floor(s / 60)}分${(s % 60).toFixed(0)}秒`;
+    };
+    const showDp = (visible) => { if (dp.el) dp.el.style.display = visible ? 'block' : 'none'; };
+    const updateDp = (downloaded, total, doneChunks, totalChunks, elapsedMs) => {
+        if (!dp.el) return;
+        const pct = total > 0 ? (downloaded / total * 100) : 0;
+        dp.bar.style.width = pct + '%';
+        dp.percent.textContent = pct.toFixed(1) + '%';
+        dp.size.textContent = total > 0 ? `${fmtMB(downloaded)} / ${fmtMB(total)} MB` : `${fmtMB(downloaded)} MB`;
+        const speed = elapsedMs > 0 ? (downloaded / 1024 / 1024 / (elapsedMs / 1000)) : 0;
+        dp.speed.textContent = `${speed.toFixed(2)} MB/s`;
+        dp.chunk.textContent = totalChunks > 0 ? `分片 ${doneChunks}/${totalChunks}` : '分片下载';
+        const remain = speed > 0 && total > 0 ? (total - downloaded) / 1024 / 1024 / speed : -1;
+        dp.time.textContent = total > 0 ? `剩余 ${fmtTime(remain)}` : '未知大小';
+    };
+
+    const downloadUrl = buildDownloadProxyUrl(videoUrl, filename);
+    const CHUNK = 8 * 1024 * 1024; // 每片 8MB
+    const CONCURRENCY = 3;         // 并发数，避免触发B站风控
+
+    if (dp.title) dp.title.textContent = filename;
+    showDp(true);
+    updateDp(0, 0, 0, 0, 0);
+    showProgress('正在获取文件信息...');
+
+    // 1. 探测总大小
+    let totalSize = 0;
+    try {
+        const probe = await fetch(downloadUrl, { headers: { Range: 'bytes=0-0' } });
+        if (probe.status !== 206) throw new Error('服务器不支持分片加速下载');
+        const cr = probe.headers.get('Content-Range');
+        const m = cr && cr.match(/\/(\d+)/);
+        if (!m) throw new Error('无法获取文件大小');
+        totalSize = parseInt(m[1]);
+    } catch (e) {
+        showDp(false);
+        throw e;
+    }
+
+    const totalChunks = Math.ceil(totalSize / CHUNK);
+    // 文件很小，走普通流式下载即可
+    if (totalChunks <= 1) {
+        showDp(false);
+        return browserDownload(videoUrl, filename, progressEl);
+    }
+
+    // 2. 并行下载各分片（关键：不传 X-Resolved-Url，让后端为每个分片重新解析）
+    const chunks = new Array(totalChunks);
+    let downloaded = 0, completed = 0, nextIdx = 0;
+    const startTime = Date.now();
+
+    const worker = async () => {
+        while (true) {
+            const i = nextIdx++;
+            if (i >= totalChunks) break;
+            const start = i * CHUNK;
+            const end = Math.min(start + CHUNK - 1, totalSize - 1);
+            const resp = await fetch(downloadUrl, { headers: { Range: `bytes=${start}-${end}` } });
+            if (resp.status !== 206) throw new Error(`分片 ${i + 1} 失败: HTTP ${resp.status}`);
+            const buf = await resp.arrayBuffer();
+            chunks[i] = buf;
+            downloaded += buf.byteLength;
+            completed++;
+            updateDp(downloaded, totalSize, completed, totalChunks, Date.now() - startTime);
+        }
+    };
+
+    try {
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, totalChunks) }, () => worker()));
+    } catch (e) {
+        showDp(false);
+        throw e;
+    }
+
+    // 3. 按顺序组装并保存
+    const blob = new Blob(chunks, { type: 'video/mp4' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    if (dp.bar) dp.bar.style.width = '100%';
+    if (dp.percent) dp.percent.textContent = '100%';
+    if (dp.time) dp.time.textContent = '完成';
+    showToast(`下载完成: ${filename} (${fmtMB(blob.size)}MB)`, 'success');
+    setTimeout(() => showDp(false), 2000);
+}
+
 // 下载路径设置提示
 function showSaveDirTip() {
     const ua = navigator.userAgent;
@@ -1714,7 +1823,19 @@ async function downloadVideo(encodedUrl, encodedTitle) {
         return;
     }
 
-    // 代理下载：分片流式写入，支持大文件
+    if (mode === 'fast') {
+        // 分片加速下载：并行拉取多段
+        try {
+            await fastDownload(url, title + '.mp4');
+        } catch (e) {
+            const dp = document.getElementById('downloadProgress');
+            if (dp) dp.style.display = 'none';
+            showToast(`加速下载失败: ${e.message}`, 'error');
+        }
+        return;
+    }
+
+    // 代理下载：顺序流式写入，支持大文件
     try {
         await browserDownload(url, title + '.mp4');
     } catch (e) {
