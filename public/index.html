@@ -340,8 +340,8 @@
                 <select id="qualitySelect">
                     <option value="16">360P 流畅</option>
                     <option value="32">480P 清晰</option>
-                    <option value="64" selected>720P 高清</option>
-                    <option value="80">1080P 超清(需登录)</option>
+                    <option value="64">720P 高清</option>
+                    <option value="80" selected>1080P 超清(需登录)</option>
                     <option value="112">1080P+ (需大会员)</option>
                     <option value="116">1080P 60帧(需大会员)</option>
                 </select>
@@ -769,12 +769,25 @@ async function getVideoInfoByAid(aid) {
     return data.data;
 }
 async function getPlayUrl(bvid, cid, qn) {
-    const data = await fetchPlayUrl(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&fnval=1&fourk=1&platform=pc`);
+    // fnval=16（DASH）才能拿到 1080P 及以上清晰度；fnval=1(MP4) 最高只到 720P
+    const data = await fetchPlayUrl(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&fnval=16&fourk=1&platform=pc`);
     return data.data;
 }
 async function getDashPlayUrl(bvid, cid, qn) {
     const data = await fetchPlayUrl(`https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=${qn}&fnval=16&fourk=1&platform=pc`);
     return data.data;
+}
+
+// 从 DASH 响应中取指定画质的视频流 / 音频流 URL
+function getDashStreamUrl(playData, type) {
+    if (!playData || !playData.dash) return '';
+    const qn = playData.quality;
+    if (type === 'video') {
+        const v = (playData.dash.video || []).find(x => x.id === qn) || playData.dash.video[0];
+        return v ? (v.baseUrl || v.base_url || '') : '';
+    }
+    const a = (playData.dash.audio || [])[0];
+    return a ? (a.baseUrl || a.base_url || '') : '';
 }
 
 // ==================== API: UP主视频列表 ====================
@@ -1425,7 +1438,6 @@ function updateCard(id, info) {
 
     let downloadHtml = '';
     if (info.playData) {
-        const durl = info.playData.durl || [];
         const quality = info.playData.quality || 0;
         const acceptQuality = info.playData.accept_quality || [];
         const acceptDesc = info.playData.accept_description || [];
@@ -1433,17 +1445,36 @@ function updateCard(id, info) {
             const qnVal = acceptQuality[idx];
             return `<span class="quality-tag ${qnVal===quality?'active':''}" onclick="reParse(${info.index}, ${qnVal})">${desc}</span>`;
         }).join('');
-        const totalSize = durl.reduce((s,d) => s+(d.size||0), 0);
-        const videoUrl = durl.length>0 ? durl[0].url : '';
-        const backupUrl = durl.length>0 && durl[0].backup_url?.length>0 ? durl[0].backup_url[0] : '';
-        downloadHtml = `<div class="quality-tags">${qualityTags}</div>
-        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">画质: ${quality} · 大小: ${formatSize(totalSize)}${durl.length>1?' · '+durl.length+'段':''}</div>
-        <div class="download-btns">
-            <button class="btn btn-primary btn-sm" onclick="downloadVideo('${encodeURIComponent(videoUrl)}', '${encodeURIComponent(info.title)}')">下载视频</button>
-            ${backupUrl?`<button class="btn btn-outline btn-sm" onclick="downloadVideo('${encodeURIComponent(backupUrl)}', '${encodeURIComponent(info.title)}')">备用线路</button>`:''}
-            <button class="btn btn-outline btn-sm" onclick="playInPage('${encodeURIComponent(info.bvid)}')">在线播放</button>
-            <button class="btn btn-outline btn-sm" onclick="copyLink('${encodeURIComponent(videoUrl)}')">复制链接</button>
-        </div>`;
+
+        const durl = info.playData.durl || [];
+        if (durl.length > 0) {
+            const totalSize = durl.reduce((s,d) => s+(d.size||0), 0);
+            const videoUrl = durl[0].url;
+            const backupUrl = durl[0].backup_url?.length>0 ? durl[0].backup_url[0] : '';
+            downloadHtml = `<div class="quality-tags">${qualityTags}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">画质: ${quality} · 大小: ${formatSize(totalSize)}${durl.length>1?' · '+durl.length+'段':''}</div>
+            <div class="download-btns">
+                <button class="btn btn-primary btn-sm" onclick="downloadVideo('${encodeURIComponent(videoUrl)}', '${encodeURIComponent(info.title)}')">下载视频</button>
+                ${backupUrl?`<button class="btn btn-outline btn-sm" onclick="downloadVideo('${encodeURIComponent(backupUrl)}', '${encodeURIComponent(info.title)}')">备用线路</button>`:''}
+                <button class="btn btn-outline btn-sm" onclick="playInPage('${encodeURIComponent(info.bvid)}')">在线播放</button>
+                <button class="btn btn-outline btn-sm" onclick="copyLink('${encodeURIComponent(videoUrl)}')">复制链接</button>
+            </div>`;
+        } else if (info.playData.dash) {
+            const dash = info.playData.dash;
+            const v = (dash.video || []).find(x => x.id === quality) || dash.video[0];
+            const a = (dash.audio || [])[0];
+            const videoUrl = v ? (v.baseUrl || v.base_url || '') : '';
+            const audioUrl = a ? (a.baseUrl || a.base_url || '') : '';
+            downloadHtml = `<div class="quality-tags">${qualityTags}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">画质: ${quality} · ${v?(v.width+'x'+v.height):''} ${v?.codecs||''}${a?' · 音频 '+a.codecs:''}</div>
+            <div class="download-btns">
+                ${videoUrl?`<button class="btn btn-primary btn-sm" onclick="downloadDashStream('${encodeURIComponent(videoUrl)}', '${encodeURIComponent(info.title+'_video.m4s')}')">下载视频流</button>`:''}
+                ${audioUrl?`<button class="btn btn-outline btn-sm" onclick="downloadDashStream('${encodeURIComponent(audioUrl)}', '${encodeURIComponent(info.title+'_audio.m4s')}')">下载音频流</button>`:''}
+                <button class="btn btn-outline btn-sm" onclick="playInPage('${encodeURIComponent(info.bvid)}')">在线播放</button>
+            </div>
+            <div class="dash-info" style="margin-top:8px;">1080P及以上为DASH分离流，请分别下载视频流+音频流后用 ffmpeg 合并：
+            <code>ffmpeg -i video.m4s -i audio.m4s -c copy out.mp4</code></div>`;
+        }
     }
 
     let dashHtml = '';
@@ -1776,6 +1807,9 @@ function copyAllLinks() {
     for (const info of parsedVideos) {
         if (info.playData?.durl?.length > 0) {
             links.push(info.playData.durl[0].url);
+        } else {
+            const vUrl = getDashStreamUrl(info.playData, 'video');
+            if (vUrl) links.push(vUrl);
         }
     }
     if (links.length === 0) { showToast('没有可下载的链接', 'error'); return; }
@@ -1790,12 +1824,12 @@ function copyAllLinks() {
 
 async function downloadAll() {
     if (parsedVideos.length === 0) { showToast('没有可下载的视频', 'error'); return; }
-    const downloadables = parsedVideos.filter(v => v.playData?.durl?.length > 0);
+    const downloadables = parsedVideos.filter(v => (v.playData?.durl?.length > 0) || !!getDashStreamUrl(v.playData, 'video'));
     if (downloadables.length === 0) { showToast('没有可下载的链接', 'error'); return; }
     showToast(`开始批量下载 ${downloadables.length} 个视频（依次进行）`, 'info');
     for (let i = 0; i < downloadables.length; i++) {
         const info = downloadables[i];
-        const url = info.playData.durl[0].url;
+        const url = info.playData.durl?.length > 0 ? info.playData.durl[0].url : getDashStreamUrl(info.playData, 'video');
         const title = info.title.replace(/[\\/:*?"<>|]/g, '_');
         showToast(`[${i + 1}/${downloadables.length}] ${title}`, 'info');
         try {
