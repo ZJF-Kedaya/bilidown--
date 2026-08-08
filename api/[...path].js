@@ -722,6 +722,30 @@ export default async function handler(request) {
       }
     }
 
+    if (path === '/api/youtube-download' || path === '/youtube-download') {
+      const targetUrl = url.searchParams.get('url');
+      if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
+      const filename = url.searchParams.get('name') || 'video.mp4';
+      const range = request.headers.get('Range');
+
+      const headers = { ...API_HEADERS, 'Referer': 'https://www.youtube.com/' };
+      if (range) headers['Range'] = range;
+      const resp = await fetch(targetUrl, { headers: safeHeaders(headers), redirect: 'follow' });
+
+      const respHeaders = {
+        ...corsHeaders(),
+        'Content-Type': resp.headers.get('Content-Type') || 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+        'Accept-Ranges': 'bytes',
+        'Access-Control-Expose-Headers': 'Content-Range',
+      };
+      const cl = resp.headers.get('Content-Length');
+      if (cl) respHeaders['Content-Length'] = cl;
+      const cr = resp.headers.get('Content-Range');
+      if (cr) respHeaders['Content-Range'] = cr;
+      return new Response(resp.body, { status: resp.status, headers: respHeaders });
+    }
+
     if (path === '/api/download' || path === '/download') {
       const targetUrl = url.searchParams.get('url');
       if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);

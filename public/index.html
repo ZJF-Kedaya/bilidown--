@@ -322,6 +322,7 @@
         <button class="tab" onclick="switchTab('up')">UP主主页解析</button>
         <button class="tab" onclick="switchTab('collection')">合集/列表解析</button>
         <button class="tab" onclick="switchTab('dynamic')">动态图片解析</button>
+        <button class="tab" onclick="switchTab('youtube')">YouTube解析</button>
     </div>
 
     <!-- 批量链接解析 -->
@@ -487,6 +488,32 @@
         </div>
         <div id="dynamicInfo" style="margin-top:12px;"></div>
         <div id="dynamicImageList" style="margin-top:12px;"></div>
+    </div>
+
+    <!-- YouTube视频解析 -->
+    <div class="input-section" id="tab-youtube" style="display:none;">
+        <h2>YouTube视频解析</h2>
+        <div class="input-row">
+            <input type="text" id="ytInput" placeholder="输入YouTube视频链接或ID，例如：&#10;https://www.youtube.com/watch?v=dQw4w9WgXcQ&#10;https://youtu.be/dQw4w9WgXcQ&#10;https://www.youtube.com/shorts/ijKOxzzZeqk">
+            <div class="btn-group">
+                <button class="btn btn-primary" id="fetchYtBtn" onclick="fetchYoutube()">解析视频</button>
+                <button class="btn btn-outline" onclick="clearYoutube()">清空</button>
+            </div>
+        </div>
+        <div class="settings-row">
+            <div class="setting-item">
+                <label>下载方式：</label>
+                <select id="ytDownloadMode">
+                    <option value="proxy" selected>代理下载(推荐)</option>
+                    <option value="copy">复制直链</option>
+                    <option value="open">新标签页打开</option>
+                </select>
+            </div>
+            <div class="setting-item" style="color:var(--text-secondary);font-size:12px;">
+                视频流无声音，需搭配音频流用 ffmpeg 合并：ffmpeg -i v.mp4 -i a.m4a -c copy out.mp4
+            </div>
+        </div>
+        <div id="ytInfo" style="margin-top:12px;"></div>
     </div>
 
     <!-- Progress -->
@@ -752,7 +779,7 @@ function formatNum(n) { return n >= 10000 ? (n / 10000).toFixed(1) + '万' : Str
 function switchTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     event.target.classList.add('active');
-    ['batch', 'up', 'collection', 'dynamic'].forEach(name => {
+    ['batch', 'up', 'collection', 'dynamic', 'youtube'].forEach(name => {
         document.getElementById('tab-' + name).style.display = name === tab ? 'block' : 'none';
     });
 }
@@ -1395,6 +1422,110 @@ function clearDynamic() {
     document.getElementById('dynamicInfo').innerHTML = '';
     document.getElementById('dynamicImageList').innerHTML = '';
     dynamicImages = [];
+}
+
+// ==================== YouTube解析 ====================
+let ytVideoStreams = [];
+let ytAudioStreams = [];
+
+function getYtDownloadMode() { return document.getElementById('ytDownloadMode').value; }
+
+async function fetchYoutube() {
+    const input = document.getElementById('ytInput').value.trim();
+    if (!input) { showToast('请输入YouTube链接或ID', 'error'); return; }
+    const btn = document.getElementById('fetchYtBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 解析中...';
+    try {
+        const resp = await fetch(`/api/youtube?url=${encodeURIComponent(input)}`, { signal: AbortSignal.timeout(20000) });
+        const data = await resp.json();
+        if (data.code !== 0) throw new Error(data.message || `解析失败（错误码 ${data.code}）`);
+        ytVideoStreams = data.data.videos || [];
+        ytAudioStreams = data.data.audios || [];
+        renderYoutube(data.data);
+        showToast('解析成功', 'success');
+    } catch (err) {
+        showToast(`解析失败: ${err.message}`, 'error');
+    }
+    btn.disabled = false;
+    btn.innerHTML = '解析视频';
+}
+
+function renderYoutube(d) {
+    const thumb = d.thumbnail || '';
+    const videoOptions = ytVideoStreams.map((s, i) =>
+        `<option value="${i}">${s.quality || (s.height + 'p')}${s.height ? ' · ' + s.width + 'x' + s.height : ''}</option>`).join('');
+    const audioOptions = ytAudioStreams.map((s, i) =>
+        `<option value="${i}">音频 ${Math.round((s.bitrate || 0) / 1000)}kbps</option>`).join('');
+
+    const infoHtml = `<div style="padding:16px;background:#f6f7f8;border-radius:8px;">
+        <div style="display:flex;gap:16px;align-items:flex-start;">
+            ${thumb ? `<img src="${thumb}" style="width:200px;border-radius:8px;object-fit:cover;" onerror="this.style.display='none';">` : ''}
+            <div style="flex:1;min-width:0;">
+                <div style="font-size:15px;font-weight:500;margin-bottom:6px;">${escHtml(d.title)}</div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+                    作者：${escHtml(d.author)} · 时长：${formatDuration(d.duration)}
+                </div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+                    <select id="ytVideoSel" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;">${videoOptions || '<option disabled>无视频流</option>'}</select>
+                    <button class="btn btn-primary btn-sm" onclick="ytDownloadVideo()" ${ytVideoStreams.length ? '' : 'disabled'}>下载视频</button>
+                    <select id="ytAudioSel" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;">${audioOptions || '<option disabled>无音频流</option>'}</select>
+                    <button class="btn btn-success btn-sm" onclick="ytDownloadAudio()" ${ytAudioStreams.length ? '' : 'disabled'}>下载音频</button>
+                </div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:10px;">
+                    视频流 <b>无声音</b>，需搭配音频流用 ffmpeg 合并：<br>
+                    <code style="background:#e7e8ea;padding:1px 5px;border-radius:3px;">ffmpeg -i video.mp4 -i audio.m4a -c copy out.mp4</code>
+                </div>
+            </div>
+        </div>
+    </div>`;
+    document.getElementById('ytInfo').innerHTML = infoHtml;
+}
+
+function ytProxyUrl(url, name) {
+    return `/api/youtube-download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
+}
+
+function ytTriggerDownload(url, name) {
+    const mode = getYtDownloadMode();
+    if (mode === 'copy') { copyLink(encodeURIComponent(url)); return; }
+    if (mode === 'open') { window.open(url, '_blank'); return; }
+    const proxyUrl = ytProxyUrl(url, name);
+    const a = document.createElement('a');
+    a.href = proxyUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+function ytDownloadVideo() {
+    const sel = document.getElementById('ytVideoSel');
+    const s = ytVideoStreams[sel ? +sel.value : 0];
+    if (!s) { showToast('无可用视频流', 'error'); return; }
+    const name = `${safeYtName()}_${s.quality || s.height + 'p'}.mp4`;
+    ytTriggerDownload(s.url, name);
+}
+
+function ytDownloadAudio() {
+    const sel = document.getElementById('ytAudioSel');
+    const s = ytAudioStreams[sel ? +sel.value : 0];
+    if (!s) { showToast('无可用音频流', 'error'); return; }
+    const name = `${safeYtName()}_audio.m4a`;
+    ytTriggerDownload(s.url, name);
+}
+
+function safeYtName() {
+    const el = document.querySelector('#ytInfo');
+    const title = el ? (el.querySelector('div[style*="font-weight:500"]')?.textContent || 'video') : 'video';
+    return title.replace(/[\\/:*?"<>|]/g, '_').trim() || 'video';
+}
+
+function clearYoutube() {
+    document.getElementById('ytInput').value = '';
+    document.getElementById('ytInfo').innerHTML = '';
+    ytVideoStreams = [];
+    ytAudioStreams = [];
 }
 
 // ==================== 卡片渲染 ====================
