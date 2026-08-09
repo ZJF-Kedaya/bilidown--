@@ -59,6 +59,13 @@ const INVIDIOUS_INSTANCES = [
   'https://inv.zoomerville.com',
 ];
 
+// ---- Cobalt 实例（专门为下载设计，跟追反爬最积极）----
+const COBALT_INSTANCES = [
+  'https://api.cobalt.tools',
+  'https://co.wuk.sh',
+  'https://cobalt-api.kwiatekmiki.com',
+];
+
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -261,6 +268,46 @@ async function tryInvidious(videoId) {
   return results.find(Boolean) || null;
 }
 
+// ---- Cobalt API ----
+function toPlayerFromCobalt(j) {
+  let entries = [];
+  if (j.status === 'stream' && j.url) {
+    entries = [{ url: j.url, mimeType: 'video/mp4', qualityLabel: '', kind: 'video' }];
+  } else if (j.picker && Array.isArray(j.picker)) {
+    entries = j.picker.map((p) => ({
+      url: p.url,
+      mimeType: (p.type || 'video/mp4').replace(':', '/'),
+      qualityLabel: p.text || '',
+      kind: (p.type || '').includes('audio') ? 'audio' : 'video',
+    }));
+  }
+  if (!entries.length) return null;
+  const thumb = j.audioThumbnails && j.audioThumbnails.length ? { thumbnails: [{ url: j.audioThumbnails[0].url }] } : null;
+  return {
+    _source: 'cobalt',
+    videoDetails: { title: j.text || '', lengthSeconds: 0, author: '', thumbnail: thumb },
+    streamingData: { formats: entries, adaptiveFormats: entries, hlsManifestUrl: '' },
+  };
+}
+
+async function tryCobalt(targetUrl) {
+  for (const origin of COBALT_INSTANCES) {
+    try {
+      const resp = await fetch(`${origin}/api/json`, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'User-Agent': WEB_UA, 'Origin': origin, 'Referer': origin + '/' },
+        body: JSON.stringify({ url: targetUrl, videoQuality: '1080' }),
+        redirect: 'follow',
+      });
+      if (!resp.ok) continue;
+      const j = await resp.json();
+      const d = toPlayerFromCobalt(j);
+      if (d) return d;
+    } catch { /* 换下一个 */ }
+  }
+  return null;
+}
+
 export default async function handler(req, res) {
   cors(res);
   if (req.method === 'OPTIONS') {
@@ -284,22 +331,27 @@ export default async function handler(req, res) {
     let data = await tryClients(videoId, '', CLIENTS.slice(0, 3));
     if (!data) diag.push('youtubei直接请求失败');
 
-    // 2. Piped
+    // 2. Cobalt（专门下载服务，最稳）
+    const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    if (!data) data = await tryCobalt(watchUrl);
+    if (!data) diag.push('Cobalt不可用');
+
+    // 3. Piped
     if (!data) data = await tryPiped(videoId);
     if (!data) diag.push('Piped不可用');
 
-    // 3. Invidious
+    // 4. Invidious
     if (!data) data = await tryInvidious(videoId);
     if (!data) diag.push('Invidious不可用');
 
-    // 4. 带 visitorData 重试 youtubei
+    // 5. 带 visitorData 重试 youtubei
     if (!data) {
       const visitorData = await fetchVisitorData();
       data = await tryClients(videoId, visitorData, CLIENTS.slice(1));
       if (!data) diag.push('带visitorData仍失败');
     }
 
-    // 5. embed 页面
+    // 6. embed 页面
     if (!data) {
       try {
         const text = await fetchEmbed(videoId);
