@@ -308,6 +308,47 @@ async function tryCobalt(targetUrl) {
   return null;
 }
 
+// ---- youtubei.js（内置 nsig 签名解密，可支持不可嵌入视频）----
+function toPlayerFromYoutubeiJs(info) {
+  const bi = info?.basic_info || {};
+  const sd = info?.streaming_data;
+  if (!sd) return null;
+  const all = [...(sd.formats || []), ...(sd.adaptive_formats || [])];
+  const entries = all
+    .map((f) => {
+      const url = (f.decoder_info && f.decoder_info.url) || f.url || '';
+      const mime = f.mime_type || '';
+      return {
+        url,
+        mimeType: mime,
+        qualityLabel: f.quality_label || f.quality || '',
+        bitrate: f.bitrate || 0,
+        width: f.width || 0,
+        height: f.height || 0,
+        itag: f.itag,
+      };
+    })
+    .filter((f) => f.url);
+  if (!entries.length) return null;
+  const thumb = bi.thumbnail && bi.thumbnail.url ? { thumbnails: [{ url: bi.thumbnail.url }] } : null;
+  return {
+    _source: 'youtubeijs',
+    videoDetails: { title: bi.title || '', lengthSeconds: bi.duration || 0, author: bi.author || '', thumbnail: thumb },
+    streamingData: { formats: entries, adaptiveFormats: entries, hlsManifestUrl: '' },
+  };
+}
+
+async function tryYoutubeiJs(videoId) {
+  try {
+    const { Innertube } = await import('youtubei.js');
+    const yt = await Innertube.create({ client_type: 'ANDROID' });
+    const info = await yt.getInfo(videoId);
+    return toPlayerFromYoutubeiJs(info);
+  } catch {
+    return null;
+  }
+}
+
 export default async function handler(req, res) {
   cors(res);
   if (req.method === 'OPTIONS') {
@@ -327,8 +368,12 @@ export default async function handler(req, res) {
 
   const diag = [];
   try {
+    // 0. youtubei.js（内置 nsig 签名解密，可支持不可嵌入视频）
+    let data = await tryYoutubeiJs(videoId);
+    if (!data) diag.push('youtubei.js失败');
+
     // 1. youtubei（无需 PO Token 客户端，并行）
-    let data = await tryClients(videoId, '', CLIENTS.slice(0, 3));
+    if (!data) data = await tryClients(videoId, '', CLIENTS.slice(0, 3));
     if (!data) diag.push('youtubei直接请求失败');
 
     // 2. Cobalt（专门下载服务，最稳）
@@ -365,7 +410,7 @@ export default async function handler(req, res) {
       throw new Error('无可用播放流（可能区域受限、会员视频、需要登录，或 YouTube 对服务器 IP 风控）。[诊断: ' + diag.join('; ') + ']');
     }
 
-    const thirdParty = data._source === 'piped' || data._source === 'invidious';
+    const thirdParty = data._source === 'piped' || data._source === 'invidious' || data._source === 'youtubeijs';
     const details = data.videoDetails || {};
     const sd = data.streamingData || {};
 

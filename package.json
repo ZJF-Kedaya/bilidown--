@@ -13,5 +13,8 @@
   },
   "keywords": ["bilibili", "vercel", "edge-functions", "wbi"],
   "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "youtubei.js": "^17.2.0"
+  }
 }
