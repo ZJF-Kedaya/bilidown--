@@ -4,12 +4,13 @@
  * 路由：
  *   /api/youtube?url=<视频链接>   解析视频并返回可下载的流地址
  *
- * 说明：
- *   - 采用"无 key 页面解析"：多策略回退获取播放数据
- *       1) watch 页面（解析 ytInitialPlayerResponse）
- *       2) youtubei v1/player 内部接口（Web 客户端）
- *       3) embed 页面
- *   - 属于 best-effort，YouTube 反爬（PO Token 等）严格时可能仍拿不到流。
+ * 方案（纯内部接口，无第三方依赖，均在 Vercel 后端完成）：
+ *   1) 从 watch 页面提取 visitorData
+ *   2) 用 youtubei v1/player 接口以多个客户端身份请求（并行，取最先成功的）
+ *       真正义：WEB 客户端需 PO Token 才返回流，改用 MWEB / TVHTML5 / WEB_EMBEDDED_PLAYER
+ *               等客户端（历史上无需 PO Token）
+ *   3) 兜底再试 embed 页面
+ *   只保留带成熟 URL 且不含 n 签名参数的流（保证可直接下载）
  */
 
 export const config = {
@@ -20,6 +21,16 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 const YOUTUBEI_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'; // 公开的 embed key
+
+// 常用客户端（顺序即优先级，前 3 个并行请求）
+const CLIENTS = [
+  { name: 'WEB_EMBEDDED_PLAYER', version: '1.20240101.00.00' },
+  { name: 'MWEB', version: '6.20240101.01.00' },
+  { name: 'TVHTML5', version: '7.20240101.00.00' },
+  { name: 'ANDROID', version: '19.09.37' },
+  { name: 'IOS', version: '19.09.3' },
+  { name: 'TV', version: '6.0' },
+];
 
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -36,10 +47,6 @@ function extractVideoId(text) {
   if (m) return m[1];
   if (/^[\w-]{11}$/.test(String(text))) return String(text);
   return null;
-}
-
-function safeName(s) {
-  return String(s || 'video').replace(/[\\/:*?"<>|]/g, '_').trim() || 'video';
 }
 
 // 括号计数法提取指定 key 后的完整 JSON 对象（避免非贪婪正则截断）
@@ -67,7 +74,6 @@ function extractJson(text, key) {
   return null;
 }
 
-// 从响应文本中解析出播放数据对象（兼容纯 JSON 和包含 ytInitialPlayerResponse 的 HTML）
 function parsePlayerPayload(text) {
   try {
     const j = JSON.parse(text);
@@ -80,10 +86,9 @@ function parsePlayerPayload(text) {
   return null;
 }
 
-async function fetchText(url, options) {
-  const resp = await fetch(url, options);
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  return await resp.text();
+function hasStreams(d) {
+  const sd = d && d.streamingData;
+  return !!(sd && ((sd.formats && sd.formats.length) || (sd.adaptiveFormats && sd.adaptiveFormats.length)));
 }
 
 const baseHeaders = {
@@ -93,47 +98,75 @@ const baseHeaders = {
 };
 
 async function fetchWatch(videoId) {
-  return await fetchText(`https://www.youtube.com/watch?v=${videoId}`, {
+  const resp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
     headers: { ...baseHeaders, 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
     redirect: 'follow',
   });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return await resp.text();
 }
 
-async function fetchYoutubei(videoId) {
-  return await fetchText(
-    `https://www.youtube.com/youtubei/v1/player?key=${YOUTUBEI_KEY}`,
-    {
-      method: 'POST',
-      headers: {
-        ...baseHeaders,
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': YOUTUBEI_KEY,
-        'Origin': 'https://www.youtube.com',
-        'Referer': 'https://www.youtube.com/',
+// 从 watch 页提取 visitorData（用于 youtubei 请求）
+function extractVisitorData(html) {
+  const m = html.match(/"visitorData":"([^"]+)"/);
+  return m ? m[1] : '';
+}
+
+async function fetchYoutubei(videoId, client, visitorData) {
+  const body = {
+    context: {
+      client: {
+        clientName: client.name,
+        clientVersion: client.version,
+        hl: 'en',
+        gl: 'US',
       },
-      body: JSON.stringify({
-        context: {
-          client: { clientName: 'WEB', clientVersion: '2.20250101.01.00', hl: 'en', gl: 'US' },
-        },
-        videoId,
-        contentCheckOk: true,
-        racyCheckOk: true,
-      }),
-      redirect: 'follow',
-    }
-  );
+    },
+    videoId,
+    contentCheckOk: true,
+    racyCheckOk: true,
+  };
+  if (visitorData) body.context.client.visitorData = visitorData;
+
+  const resp = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${YOUTUBEI_KEY}`, {
+    method: 'POST',
+    headers: {
+      ...baseHeaders,
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': YOUTUBEI_KEY,
+      'Origin': 'https://www.youtube.com',
+      'Referer': 'https://www.youtube.com/',
+    },
+    body: JSON.stringify(body),
+    redirect: 'follow',
+  });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return await resp.text();
 }
 
 async function fetchEmbed(videoId) {
-  return await fetchText(`https://www.youtube.com/embed/${videoId}`, {
+  const resp = await fetch(`https://www.youtube.com/embed/${videoId}`, {
     headers: { ...baseHeaders, 'Accept': 'text/html,application/xhtml+xml,*/*' },
     redirect: 'follow',
   });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return await resp.text();
 }
 
-function hasStreams(d) {
-  const sd = d && d.streamingData;
-  return !!(sd && ((sd.formats && sd.formats.length) || (sd.adaptiveFormats && sd.adaptiveFormats.length)));
+// 并行尝试一组客户端，返回第一个有流的播放数据
+async function tryClients(videoId, visitorData, clients) {
+  const results = await Promise.all(
+    clients.map(async (c) => {
+      try {
+        const text = await fetchYoutubei(videoId, c, visitorData);
+        const d = parsePlayerPayload(text);
+        return d && hasStreams(d) ? d : null;
+      } catch {
+        return null;
+      }
+    })
+  );
+  return results.find(Boolean) || null;
 }
 
 export default async function handler(req, res) {
@@ -154,35 +187,36 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 多策略回退：watch → youtubei → embed
-    const strategies = [
-      { name: 'watch', get: () => fetchWatch(videoId) },
-      { name: 'youtubei', get: () => fetchYoutubei(videoId) },
-      { name: 'embed', get: () => fetchEmbed(videoId) },
-    ];
+    // 1. 获取 visitorData
+    let visitorData = '';
+    try {
+      const html = await fetchWatch(videoId);
+      visitorData = extractVisitorData(html);
+    } catch { /* 忽略，继续 */ }
 
-    let data = null;
-    let lastError = null;
-    for (const s of strategies) {
+    // 2. 多客户端并行尝试（分批，避免并发过多）
+    let data = await tryClients(videoId, visitorData, CLIENTS.slice(0, 3));
+    if (!data) data = await tryClients(videoId, visitorData, CLIENTS.slice(3));
+
+    // 3. 兜底：embed 页面
+    if (!data) {
       try {
-        const text = await s.get();
+        const text = await fetchEmbed(videoId);
         const d = parsePlayerPayload(text);
-        if (d && hasStreams(d)) { data = d; break; }
-        lastError = new Error('该策略未返回播放流');
-      } catch (e) {
-        lastError = e;
-      }
+        if (d && hasStreams(d)) data = d;
+      } catch { /* 忽略 */ }
     }
 
     if (!data) {
-      throw new Error('无可用播放流（可能区域受限、会员视频、需要登录，或 YouTube 反爬拦截）' + (lastError ? '；' + lastError.message : ''));
+      throw new Error('无可用播放流（可能区域受限、会员视频、需要登录，或 YouTube 反爬拦截）');
     }
 
     const details = data.videoDetails || {};
     const sd = data.streamingData || {};
 
+    // 只保留：mp4、带 url、且不含 n 签名参数（保证可直接下载）
     const items = [...(sd.formats || []), ...(sd.adaptiveFormats || [])]
-      .filter((f) => f.url && (f.mimeType || '').includes('mp4'))
+      .filter((f) => f.url && (f.mimeType || '').includes('mp4') && !/[?&]n=/.test(f.url))
       .map((f) => ({
         itag: f.itag,
         mime: f.mimeType,
@@ -198,6 +232,10 @@ export default async function handler(req, res) {
     const audios = items.filter((f) => f.kind === 'audio');
     videos.sort((a, b) => (b.height || 0) - (a.height || 0));
     audios.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+    if (videos.length === 0 && audios.length === 0) {
+      throw new Error('拿到了播放数据但没有可用的直链（流的签名需要额外处理，暂不支持该清晰度）');
+    }
 
     const thumb =
       details.thumbnail && details.thumbnail.thumbnails && details.thumbnail.thumbnails.length
