@@ -4,16 +4,15 @@
  * 路由：
  *   /api/youtube?url=<视频链接>   解析视频并返回可下载的流地址
  *
- * 方案（参考 yt-dlp PO Token 指南，纯内部接口，无第三方依赖）：
- *   YouTube 的反爬要点：
- *   - datacenter/云 IP 会被 bot detection 拦截（Vercel 属于此类）
- *   - WEB/MWEB 客户端需要 PO Token 才返回流
- *   因此选择"无需 PO Token"的客户端：
- *     web_embedded / android_vr / tv(tv_downgraded) / web_safari(HLS)
- *   流程：
- *     1) 直接用 youtubei v1/player 以多个无需 PO Token 的客户端并行请求（不先访问 watch 页）
- *     2) 失败后再带 visitorData 重试
- *     3) 兜底 embed 页面 / HLS m3u8
+ * 方案（纯 HTTP，无第三方依赖库，仅在 Vercel 后端发起请求）：
+ *   YouTube 对数据中心 IP 风控 + 需 PO Token，纯直连基本拿不到流。
+ *   因此采用多源回退，任一成功即返回：
+ *     1) youtubei v1/player（无需 PO Token 的客户端：WEB_EMBEDDED_PLAYER/ANDROID_VR/TVHTML5）
+ *     2) Piped API（社区代理，多实例并行）
+ *     3) Invidious API（社区代理，多实例并行）
+ *     4) 带 visitorData 重试 youtubei
+ *     5) embed 页面
+ *   失败时返回诊断信息，便于定位。
  */
 
 export const config = {
@@ -22,7 +21,6 @@ export const config = {
 
 const YOUTUBEI_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'; // 公开的 embed key
 
-// 无需(或低要求) PO Token 的客户端，按优先级排序
 const CLIENTS = [
   { name: 'WEB_EMBEDDED_PLAYER', version: '1.20240101.00.00' },
   { name: 'ANDROID_VR', version: '1.60.28' },
@@ -31,13 +29,35 @@ const CLIENTS = [
   { name: 'IOS', version: '19.09.3' },
 ];
 
-// 各客户端对应的浏览器 UA（部分客户端对 UA 敏感）
 const CLIENT_UA = {
   ANDROID_VR: 'Mozilla/5.0 (Linux; Android 13; VR) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
   ANDROID: 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
   IOS: 'com.google.ios.youtube/19.09.3 (iPhone; U; CPU iOS 17_0 like Mac OS X)',
   TVHTML5: 'Mozilla/5.0 (PlayStation; PlayStation 5/2.00) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 };
+
+const WEB_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+// ---- Piped 实例 ----
+const PIPED_INSTANCES = [
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.adminforge.de',
+  'https://api.piped.yt',
+  'https://pipedapi.tokhmi.xyz',
+  'https://pipedapi.leptons.xyz',
+  'https://pipedapi.rivo.lol',
+  'https://pipedapi.moomoo.me',
+  'https://pipedapi.syncpundit.io',
+];
+
+// ---- Invidious 实例 ----
+const INVIDIOUS_INSTANCES = [
+  'https://inv.nadeko.net',
+  'https://invidious.nerdvpn.de',
+  'https://invidious.tiekoetter.com',
+  'https://invidious.f5.si',
+  'https://inv.zoomerville.com',
+];
 
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -100,12 +120,7 @@ function hasStreams(d) {
 async function fetchYoutubei(videoId, client, visitorData) {
   const body = {
     context: {
-      client: {
-        clientName: client.name,
-        clientVersion: client.version,
-        hl: 'en',
-        gl: 'US',
-      },
+      client: { clientName: client.name, clientVersion: client.version, hl: 'en', gl: 'US' },
     },
     videoId,
     contentCheckOk: true,
@@ -116,7 +131,7 @@ async function fetchYoutubei(videoId, client, visitorData) {
   const resp = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${YOUTUBEI_KEY}`, {
     method: 'POST',
     headers: {
-      'User-Agent': CLIENT_UA[client.name] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'User-Agent': CLIENT_UA[client.name] || WEB_UA,
       'Accept': '*/*',
       'Accept-Language': 'en-US,en;q=0.9',
       'Content-Type': 'application/json',
@@ -131,14 +146,10 @@ async function fetchYoutubei(videoId, client, visitorData) {
   return await resp.text();
 }
 
-// 从 watch 页提取 visitorData
 async function fetchVisitorData() {
   try {
     const resp = await fetch('https://www.youtube.com/watch?v=____', {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
+      headers: { 'User-Agent': WEB_UA, 'Accept-Language': 'en-US,en;q=0.9' },
       redirect: 'follow',
     });
     const html = await resp.text();
@@ -151,75 +162,11 @@ async function fetchVisitorData() {
 
 async function fetchEmbed(videoId) {
   const resp = await fetch(`https://www.youtube.com/embed/${videoId}?autoplay=0`, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,*/*',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
+    headers: { 'User-Agent': WEB_UA, 'Accept': 'text/html,application/xhtml+xml,*/*', 'Accept-Language': 'en-US,en;q=0.9' },
     redirect: 'follow',
   });
   if (!resp.ok) throw new Error('HTTP ' + resp.status);
   return await resp.text();
-}
-
-// ---- Piped API 兜底（社区维护的 YouTube 代理，自行跟进 PO Token/反爬）----
-const PIPED_INSTANCES = [
-  'https://pipedapi.kavin.rocks',
-  'https://pipedapi.adminforge.de',
-  'https://api.piped.yt',
-  'https://pipedapi.tokhmi.xyz',
-];
-
-async function fetchPiped(videoId) {
-  for (const origin of PIPED_INSTANCES) {
-    try {
-      const resp = await fetch(`${origin}/streams/${videoId}`, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          'Accept': 'application/json',
-        },
-        redirect: 'follow',
-      });
-      if (!resp.ok) continue;
-      const j = await resp.json();
-      if (j && ((j.videoStreams && j.videoStreams.length) || (j.audioStreams && j.audioStreams.length) || j.hls)) {
-        return toPlayerLike(j);
-      }
-    } catch { /* 换下一个实例 */ }
-  }
-  return null;
-}
-
-function toPlayerLike(p) {
-  const videoStreams = (p.videoStreams || []).map((v) => ({
-    url: v.url,
-    mimeType: v.mimeType || 'video/mp4',
-    qualityLabel: v.quality || '',
-    bitrate: v.bitrate || 0,
-    width: v.width || 0,
-    height: v.height || 0,
-  }));
-  const audioStreams = (p.audioStreams || []).map((a) => ({
-    url: a.url,
-    mimeType: a.mimeType || 'audio/webm',
-    qualityLabel: a.quality || '',
-    bitrate: a.bitrate || 0,
-  }));
-  const thumb = p.thumbnail ? { thumbnails: [{ url: p.thumbnail }] } : null;
-  return {
-    _source: 'piped',
-    videoDetails: {
-      title: p.title || '',
-      lengthSeconds: p.duration || 0,
-      author: p.uploader || '',
-      thumbnail: thumb,
-    },
-    streamingData: {
-      formats: videoStreams,
-      adaptiveFormats: [...videoStreams, ...audioStreams],
-      hlsManifestUrl: p.hls || '',
-    },
-  };
 }
 
 async function tryClients(videoId, visitorData, clients) {
@@ -229,13 +176,86 @@ async function tryClients(videoId, visitorData, clients) {
         const text = await fetchYoutubei(videoId, c, visitorData);
         const d = parsePlayerPayload(text);
         if (!d || !d.streamingData) return null;
-        // 判断是否真的可播放且含流
         const sd = d.streamingData;
         const hasFmt = (sd.formats && sd.formats.length) || (sd.adaptiveFormats && sd.adaptiveFormats.length) || sd.hlsManifestUrl;
         return hasFmt ? d : null;
       } catch {
         return null;
       }
+    })
+  );
+  return results.find(Boolean) || null;
+}
+
+// ---- Piped API ----
+function toPlayerFromPiped(p) {
+  const videoStreams = (p.videoStreams || []).map((v) => ({
+    url: v.url, mimeType: v.mimeType || 'video/mp4', qualityLabel: v.quality || '',
+    bitrate: v.bitrate || 0, width: v.width || 0, height: v.height || 0,
+  }));
+  const audioStreams = (p.audioStreams || []).map((a) => ({
+    url: a.url, mimeType: a.mimeType || 'audio/webm', qualityLabel: a.quality || '', bitrate: a.bitrate || 0,
+  }));
+  const thumb = p.thumbnail ? { thumbnails: [{ url: p.thumbnail }] } : null;
+  return {
+    _source: 'piped',
+    videoDetails: { title: p.title || '', lengthSeconds: p.duration || 0, author: p.uploader || '', thumbnail: thumb },
+    streamingData: { formats: videoStreams, adaptiveFormats: [...videoStreams, ...audioStreams], hlsManifestUrl: p.hls || '' },
+  };
+}
+
+async function tryPiped(videoId) {
+  const results = await Promise.all(
+    PIPED_INSTANCES.map(async (origin) => {
+      try {
+        const resp = await fetch(`${origin}/streams/${videoId}`, {
+          headers: { 'User-Agent': WEB_UA, 'Accept': 'application/json' },
+          redirect: 'follow',
+        });
+        if (!resp.ok) return null;
+        const j = await resp.json();
+        if (j && ((j.videoStreams && j.videoStreams.length) || (j.audioStreams && j.audioStreams.length) || j.hls)) {
+          return toPlayerFromPiped(j);
+        }
+      } catch { /* 换下一个 */ }
+      return null;
+    })
+  );
+  return results.find(Boolean) || null;
+}
+
+// ---- Invidious API ----
+function toPlayerFromInvidious(v) {
+  const fs = (v.formatStreams || []).map((f) => ({
+    url: f.url, mimeType: (f.type || 'video/mp4').split(';')[0], qualityLabel: f.qualityLabel || '', bitrate: 0, width: 0, height: 0,
+  }));
+  const af = (v.adaptiveFormats || []).map((f) => ({
+    url: f.url, mimeType: (f.type || 'video/mp4').split(';')[0], qualityLabel: f.qualityLabel || '',
+    bitrate: f.bitrate || 0, width: f.width || 0, height: f.height || 0,
+  }));
+  const thumb = v.videoThumbnails && v.videoThumbnails.length ? { thumbnails: [{ url: v.videoThumbnails[v.videoThumbnails.length - 1].url }] } : null;
+  return {
+    _source: 'invidious',
+    videoDetails: { title: v.title || '', lengthSeconds: v.lengthSeconds || 0, author: v.author || '', thumbnail: thumb },
+    streamingData: { formats: fs, adaptiveFormats: [...fs, ...af], hlsManifestUrl: '' },
+  };
+}
+
+async function tryInvidious(videoId) {
+  const results = await Promise.all(
+    INVIDIOUS_INSTANCES.map(async (origin) => {
+      try {
+        const resp = await fetch(`${origin}/api/v1/videos/${videoId}`, {
+          headers: { 'User-Agent': WEB_UA, 'Accept': 'application/json' },
+          redirect: 'follow',
+        });
+        if (!resp.ok) return null;
+        const j = await resp.json();
+        if (j && ((j.formatStreams && j.formatStreams.length) || (j.adaptiveFormats && j.adaptiveFormats.length))) {
+          return toPlayerFromInvidious(j);
+        }
+      } catch { /* 换下一个 */ }
+      return null;
     })
   );
   return results.find(Boolean) || null;
@@ -258,45 +278,54 @@ export default async function handler(req, res) {
     return;
   }
 
+  const diag = [];
   try {
-    // 1. 先不带 visitorData 并行尝试无需 PO Token 的客户端
+    // 1. youtubei（无需 PO Token 客户端，并行）
     let data = await tryClients(videoId, '', CLIENTS.slice(0, 3));
+    if (!data) diag.push('youtubei直接请求失败');
 
-    // 2. 失败则走 Piped API（社区代理，最稳）
-    if (!data) data = await fetchPiped(videoId);
+    // 2. Piped
+    if (!data) data = await tryPiped(videoId);
+    if (!data) diag.push('Piped不可用');
 
-    // 3. 仍失败则拿 visitorData 重试
+    // 3. Invidious
+    if (!data) data = await tryInvidious(videoId);
+    if (!data) diag.push('Invidious不可用');
+
+    // 4. 带 visitorData 重试 youtubei
     if (!data) {
       const visitorData = await fetchVisitorData();
       data = await tryClients(videoId, visitorData, CLIENTS.slice(1));
+      if (!data) diag.push('带visitorData仍失败');
     }
 
-    // 4. 兜底 embed 页面
+    // 5. embed 页面
     if (!data) {
       try {
         const text = await fetchEmbed(videoId);
         const d = parsePlayerPayload(text);
         if (d && hasStreams(d)) data = d;
       } catch { /* 忽略 */ }
+      if (!data) diag.push('embed页面失败');
     }
 
     if (!data) {
-      throw new Error('无可用播放流（可能区域受限、会员视频、需要登录，或 YouTube 对服务器 IP 风控）');
+      throw new Error('无可用播放流（可能区域受限、会员视频、需要登录，或 YouTube 对服务器 IP 风控）。[诊断: ' + diag.join('; ') + ']');
     }
 
-    const piped = data._source === 'piped';
+    const thirdParty = data._source === 'piped' || data._source === 'invidious';
     const details = data.videoDetails || {};
     const sd = data.streamingData || {};
 
-    // 收集带直链的流；mp4 优先，Piped 来源也保留 webm，仅对非 Piped 过滤需解密的 n 签名流
+    // 只保留带直链的 mp4；第三方来源也保留 webm，且不过滤 n 签名
     const items = [...(sd.formats || []), ...(sd.adaptiveFormats || [])]
-      .filter((f) => f.url && (piped || (f.mimeType || '').includes('mp4')))
-      .filter((f) => piped || !/[?&]n=/.test(f.url))
+      .filter((f) => f.url && (thirdParty || (f.mimeType || '').includes('mp4')))
+      .filter((f) => thirdParty || !/[?&]n=/.test(f.url))
       .map((f) => ({
         itag: f.itag,
         mime: f.mimeType,
         kind: (f.mimeType || '').includes('audio') ? 'audio' : 'video',
-        quality: f.qualityLabel || f.quality || '',
+        quality: f.qualityLabel || '',
         bitrate: f.bitrate || 0,
         width: f.width || 0,
         height: f.height || 0,
@@ -308,15 +337,14 @@ export default async function handler(req, res) {
     videos.sort((a, b) => (b.height || 0) - (a.height || 0));
     audios.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
 
-    // HLS m3u8 兜底（web_safari/tv 可能只返回 HLS 流）
-    let hls = sd.hlsManifestUrl || '';
-    if (hls && !hls.startsWith('http')) hls = '';
+    const hls = sd.hlsManifestUrl && sd.hlsManifestUrl.startsWith('http') ? sd.hlsManifestUrl : '';
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(
       JSON.stringify({
         code: 0,
         message: 'ok',
+        source: data._source || 'youtubei',
         data: {
           id: videoId,
           title: details.title || '',
