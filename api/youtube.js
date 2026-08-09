@@ -5,10 +5,11 @@
  *   /api/youtube?url=<视频链接>   解析视频并返回可下载的流地址
  *
  * 说明：
- *   - 采用"无 key 页面解析"：抓取 watch 页面，解析内嵌的 ytInitialPlayerResponse，
- *     提取 streamingData 中的流地址（googlevideo 直链，可直接下载）。
- *   - 不使用官方 API key；属于 best-effort，YouTube 反爬变化时可能失效。
- *   - 音视频通常分离（adaptiveFormats），需要时用 ffmpeg 合并；formats 里也有合一 mp4。
+ *   - 采用"无 key 页面解析"：多策略回退获取播放数据
+ *       1) watch 页面（解析 ytInitialPlayerResponse）
+ *       2) youtubei v1/player 内部接口（Web 客户端）
+ *       3) embed 页面
+ *   - 属于 best-effort，YouTube 反爬（PO Token 等）严格时可能仍拿不到流。
  */
 
 export const config = {
@@ -17,6 +18,8 @@ export const config = {
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+const YOUTUBEI_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'; // 公开的 embed key
 
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -39,34 +42,98 @@ function safeName(s) {
   return String(s || 'video').replace(/[\\/:*?"<>|]/g, '_').trim() || 'video';
 }
 
-async function fetchPlayer(videoId) {
-  const url = `https://www.youtube.com/watch?v=${videoId}`;
-  const resp = await fetch(url, {
-    headers: {
-      'User-Agent': UA,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Cookie': 'CONSENT=PENDING+999; SOCS=CAI',
-    },
-    redirect: 'follow',
-  });
-  if (!resp.ok) throw new Error('YouTube 页面请求失败: HTTP ' + resp.status);
+// 括号计数法提取指定 key 后的完整 JSON 对象（避免非贪婪正则截断）
+function extractJson(text, key) {
+  const idx = text.indexOf(key);
+  if (idx === -1) return null;
+  const start = text.indexOf('{', idx);
+  if (start === -1) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+    } else {
+      if (c === '"') inStr = true;
+      else if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) return text.substring(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+// 从响应文本中解析出播放数据对象（兼容纯 JSON 和包含 ytInitialPlayerResponse 的 HTML）
+function parsePlayerPayload(text) {
+  try {
+    const j = JSON.parse(text);
+    if (j && j.streamingData) return j;
+  } catch { /* 不是纯 JSON */ }
+  const raw = extractJson(text, 'ytInitialPlayerResponse');
+  if (raw) {
+    try { return JSON.parse(raw); } catch { /* 忽略 */ }
+  }
+  return null;
+}
+
+async function fetchText(url, options) {
+  const resp = await fetch(url, options);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
   return await resp.text();
 }
 
-function parsePlayer(html) {
-  const m = html.match(/ytInitialPlayerResponse\s*=\s*(\{.*?\});/s);
-  if (!m) throw new Error('无法从页面解析到播放数据（可能被重定向到验证页）');
-  let data;
-  try {
-    data = JSON.parse(m[1]);
-  } catch (e) {
-    throw new Error('播放数据解析失败');
-  }
-  if (!data || !data.streamingData) {
-    throw new Error('该视频无可用播放流（可能区域受限、会员视频或需要登录）');
-  }
-  return data;
+const baseHeaders = {
+  'User-Agent': UA,
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Cookie': 'CONSENT=PENDING+999; SOCS=CAI',
+};
+
+async function fetchWatch(videoId) {
+  return await fetchText(`https://www.youtube.com/watch?v=${videoId}`, {
+    headers: { ...baseHeaders, 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
+    redirect: 'follow',
+  });
+}
+
+async function fetchYoutubei(videoId) {
+  return await fetchText(
+    `https://www.youtube.com/youtubei/v1/player?key=${YOUTUBEI_KEY}`,
+    {
+      method: 'POST',
+      headers: {
+        ...baseHeaders,
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': YOUTUBEI_KEY,
+        'Origin': 'https://www.youtube.com',
+        'Referer': 'https://www.youtube.com/',
+      },
+      body: JSON.stringify({
+        context: {
+          client: { clientName: 'WEB', clientVersion: '2.20250101.01.00', hl: 'en', gl: 'US' },
+        },
+        videoId,
+        contentCheckOk: true,
+        racyCheckOk: true,
+      }),
+      redirect: 'follow',
+    }
+  );
+}
+
+async function fetchEmbed(videoId) {
+  return await fetchText(`https://www.youtube.com/embed/${videoId}`, {
+    headers: { ...baseHeaders, 'Accept': 'text/html,application/xhtml+xml,*/*' },
+    redirect: 'follow',
+  });
+}
+
+function hasStreams(d) {
+  const sd = d && d.streamingData;
+  return !!(sd && ((sd.formats && sd.formats.length) || (sd.adaptiveFormats && sd.adaptiveFormats.length)));
 }
 
 export default async function handler(req, res) {
@@ -87,12 +154,33 @@ export default async function handler(req, res) {
   }
 
   try {
-    const html = await fetchPlayer(videoId);
-    const data = parsePlayer(html);
+    // 多策略回退：watch → youtubei → embed
+    const strategies = [
+      { name: 'watch', get: () => fetchWatch(videoId) },
+      { name: 'youtubei', get: () => fetchYoutubei(videoId) },
+      { name: 'embed', get: () => fetchEmbed(videoId) },
+    ];
+
+    let data = null;
+    let lastError = null;
+    for (const s of strategies) {
+      try {
+        const text = await s.get();
+        const d = parsePlayerPayload(text);
+        if (d && hasStreams(d)) { data = d; break; }
+        lastError = new Error('该策略未返回播放流');
+      } catch (e) {
+        lastError = e;
+      }
+    }
+
+    if (!data) {
+      throw new Error('无可用播放流（可能区域受限、会员视频、需要登录，或 YouTube 反爬拦截）' + (lastError ? '；' + lastError.message : ''));
+    }
+
     const details = data.videoDetails || {};
     const sd = data.streamingData || {};
 
-    // 合并 formats（合一 mp4）与 adaptiveFormats（纯视频/纯音频），只保留带直链且为 mp4 的
     const items = [...(sd.formats || []), ...(sd.adaptiveFormats || [])]
       .filter((f) => f.url && (f.mimeType || '').includes('mp4'))
       .map((f) => ({
@@ -103,12 +191,11 @@ export default async function handler(req, res) {
         bitrate: f.bitrate || 0,
         width: f.width || 0,
         height: f.height || 0,
-        url: f.url, // googlevideo 直链，通常可直接下载；如需代理可走 /api/youtube-download
+        url: f.url,
       }));
 
     const videos = items.filter((f) => f.kind === 'video');
     const audios = items.filter((f) => f.kind === 'audio');
-    // 视频按分辨率降序，音频按码率降序
     videos.sort((a, b) => (b.height || 0) - (a.height || 0));
     audios.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
 
