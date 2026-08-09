@@ -162,6 +162,66 @@ async function fetchEmbed(videoId) {
   return await resp.text();
 }
 
+// ---- Piped API 兜底（社区维护的 YouTube 代理，自行跟进 PO Token/反爬）----
+const PIPED_INSTANCES = [
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.adminforge.de',
+  'https://api.piped.yt',
+  'https://pipedapi.tokhmi.xyz',
+];
+
+async function fetchPiped(videoId) {
+  for (const origin of PIPED_INSTANCES) {
+    try {
+      const resp = await fetch(`${origin}/streams/${videoId}`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'Accept': 'application/json',
+        },
+        redirect: 'follow',
+      });
+      if (!resp.ok) continue;
+      const j = await resp.json();
+      if (j && ((j.videoStreams && j.videoStreams.length) || (j.audioStreams && j.audioStreams.length) || j.hls)) {
+        return toPlayerLike(j);
+      }
+    } catch { /* 换下一个实例 */ }
+  }
+  return null;
+}
+
+function toPlayerLike(p) {
+  const videoStreams = (p.videoStreams || []).map((v) => ({
+    url: v.url,
+    mimeType: v.mimeType || 'video/mp4',
+    qualityLabel: v.quality || '',
+    bitrate: v.bitrate || 0,
+    width: v.width || 0,
+    height: v.height || 0,
+  }));
+  const audioStreams = (p.audioStreams || []).map((a) => ({
+    url: a.url,
+    mimeType: a.mimeType || 'audio/webm',
+    qualityLabel: a.quality || '',
+    bitrate: a.bitrate || 0,
+  }));
+  const thumb = p.thumbnail ? { thumbnails: [{ url: p.thumbnail }] } : null;
+  return {
+    _source: 'piped',
+    videoDetails: {
+      title: p.title || '',
+      lengthSeconds: p.duration || 0,
+      author: p.uploader || '',
+      thumbnail: thumb,
+    },
+    streamingData: {
+      formats: videoStreams,
+      adaptiveFormats: [...videoStreams, ...audioStreams],
+      hlsManifestUrl: p.hls || '',
+    },
+  };
+}
+
 async function tryClients(videoId, visitorData, clients) {
   const results = await Promise.all(
     clients.map(async (c) => {
@@ -202,13 +262,16 @@ export default async function handler(req, res) {
     // 1. 先不带 visitorData 并行尝试无需 PO Token 的客户端
     let data = await tryClients(videoId, '', CLIENTS.slice(0, 3));
 
-    // 2. 失败则拿 visitorData 后重试
+    // 2. 失败则走 Piped API（社区代理，最稳）
+    if (!data) data = await fetchPiped(videoId);
+
+    // 3. 仍失败则拿 visitorData 重试
     if (!data) {
       const visitorData = await fetchVisitorData();
       data = await tryClients(videoId, visitorData, CLIENTS.slice(1));
     }
 
-    // 3. 兜底 embed 页面
+    // 4. 兜底 embed 页面
     if (!data) {
       try {
         const text = await fetchEmbed(videoId);
@@ -221,12 +284,14 @@ export default async function handler(req, res) {
       throw new Error('无可用播放流（可能区域受限、会员视频、需要登录，或 YouTube 对服务器 IP 风控）');
     }
 
+    const piped = data._source === 'piped';
     const details = data.videoDetails || {};
     const sd = data.streamingData || {};
 
-    // 收集带直链的 mp4 流（过滤掉需解密的 n 签名流）
+    // 收集带直链的流；mp4 优先，Piped 来源也保留 webm，仅对非 Piped 过滤需解密的 n 签名流
     const items = [...(sd.formats || []), ...(sd.adaptiveFormats || [])]
-      .filter((f) => f.url && (f.mimeType || '').includes('mp4') && !/[?&]n=/.test(f.url))
+      .filter((f) => f.url && (piped || (f.mimeType || '').includes('mp4')))
+      .filter((f) => piped || !/[?&]n=/.test(f.url))
       .map((f) => ({
         itag: f.itag,
         mime: f.mimeType,
