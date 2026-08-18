@@ -72,17 +72,6 @@ function cors(res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range');
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    return response;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 function extractVideoId(text) {
   let m = String(text).match(/[?&]v=([\w-]{11})/);
   if (m) return m[1];
@@ -146,7 +135,7 @@ async function fetchYoutubei(videoId, client, visitorData) {
   };
   if (visitorData) body.context.client.visitorData = visitorData;
 
-  const resp = await fetchWithTimeout(`https://www.youtube.com/youtubei/v1/player?key=${YOUTUBEI_KEY}`, {
+  const resp = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${YOUTUBEI_KEY}`, {
     method: 'POST',
     headers: {
       'User-Agent': CLIENT_UA[client.name] || WEB_UA,
@@ -159,7 +148,7 @@ async function fetchYoutubei(videoId, client, visitorData) {
     },
     body: JSON.stringify(body),
     redirect: 'follow',
-  }, 10000);
+  });
   if (!resp.ok) throw new Error('HTTP ' + resp.status);
   return await resp.text();
 }
