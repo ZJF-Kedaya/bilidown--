@@ -819,10 +819,11 @@ export default async function handler(request) {
         });
       }
 
+      const encodedFilename = encodeURIComponent(filename).replace(/'/g, '%27');
       const respHeaders = {
         ...corsHeaders(),
         'Content-Type': resp.headers.get('Content-Type') || 'video/mp4',
-        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+        'Content-Disposition': `attachment; filename="${encodedFilename}"`,
         'Accept-Ranges': 'bytes',
         'Cache-Control': 'public, max-age=3600',
         'Access-Control-Expose-Headers': 'X-Resolved-Url, Content-Range',
