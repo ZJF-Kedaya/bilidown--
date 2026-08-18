@@ -725,8 +725,7 @@ export default async function handler(request) {
     if (path === '/api/youtube-download' || path === '/youtube-download') {
       const targetUrl = url.searchParams.get('url');
       if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
-      let filename = url.searchParams.get('name') || 'video.mp4';
-  filename = decodeURIComponent(filename);
+      const filename = url.searchParams.get('name') || 'video.mp4';
       const range = request.headers.get('Range');
 
       const headers = { ...API_HEADERS, 'Referer': 'https://www.youtube.com/' };
@@ -747,18 +746,11 @@ export default async function handler(request) {
       return new Response(resp.body, { status: resp.status, headers: respHeaders });
     }
 
-    if (path === '/api/redirect' || path === '/redirect') {
-      const targetUrl = url.searchParams.get('url');
-      if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
-      let filename = url.searchParams.get('name') || 'video.mp4';
-      filename = decodeURIComponent(filename);
-      const encodedFilename = encodeURIComponent(filename);
-      const headers = {
+    if (path === '/api/download' || path === '/download') {
       const targetUrl = url.searchParams.get('url');
       if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
       const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
-      let filename = url.searchParams.get('name') || 'video.mp4';
-      filename = decodeURIComponent(filename);
+      const filename = url.searchParams.get('name') || 'video.mp4';
       const range = request.headers.get('Range'); // 支持 Range 分片请求
       let resolvedUrl = request.headers.get('X-Resolved-Url'); // 前端提供的已解析 CDN URL
 
@@ -827,11 +819,10 @@ export default async function handler(request) {
         });
       }
 
-      const encodedFilename = encodeURIComponent(filename);
       const respHeaders = {
         ...corsHeaders(),
         'Content-Type': resp.headers.get('Content-Type') || 'video/mp4',
-        'Content-Disposition': `attachment; filename="${encodedFilename}"`,
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
         'Accept-Ranges': 'bytes',
         'Cache-Control': 'public, max-age=3600',
         'Access-Control-Expose-Headers': 'X-Resolved-Url, Content-Range',
