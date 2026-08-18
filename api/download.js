@@ -3,7 +3,7 @@
  * 支持 B站视频页面链接 或 CDN 直链
  */
 
-export const config = { runtime: 'edge' };
+export const config = { runtime: 'nodejs' };
 export const dynamic = 'force-dynamic';
 
 // ===== 工具函数 =====
@@ -111,16 +111,73 @@ export default async function handler(request) {
       targetUrl = playData.data.durl[0].url;
     }
 
-    // 重定向到直链，让浏览器直接下载，加快速度并显示进度
+    // 最终下载
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': '*/*',
+      'Referer': 'https://www.bilibili.com/',
+      'Origin': 'https://www.bilibili.com',
+      'Cookie': await getAnonCookie(),
+    };
+    if (range) headers['Range'] = range;
+
+    const resp = await fetch(targetUrl, { headers, redirect: 'follow' });
+    if (!resp.ok) {
+      return new Response(
+        JSON.stringify({ code: resp.status, message: `下载失败: ${resp.statusText}` }),
+        { status: resp.status, headers: { ...corsHeaders(), 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const contentLength = resp.headers.get('Content-Length');
+    const contentType = resp.headers.get('Content-Type') || 'video/mp4';
+    const contentRange = resp.headers.get('Content-Range');
     const encodedName = encodeURIComponent(filename).replace(/'/g, '%27');
-    return new Response(null, {
-      status: 302,
-      headers: {
-        ...corsHeaders(),
-        'Location': targetUrl,
-        'Content-Disposition': `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`,
-      },
+
+    // 获取原始响应体
+    const body = resp.body;
+
+    const responseHeaders = {
+      ...corsHeaders(),
+      'Content-Type': contentType,
+      'Content-Disposition': `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`,
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'public, max-age=3600',
+    };
+    if (contentLength) responseHeaders['Content-Length'] = contentLength;
+    if (contentRange) responseHeaders['Content-Range'] = contentRange;
+
+    // 使用 ReadableStream 监控进度并流式传输
+    const stream = new ReadableStream({
+      start(controller) {
+        const reader = body.getReader();
+        let loaded = 0;
+        const total = parseInt(contentLength || '0', 10);
+
+        function push() {
+          reader.read().then(({ done, value }) => {
+            if (done) {
+              controller.close();
+              return;
+            }
+            loaded += value.length;
+            if (total > 0) {
+              const percent = Math.round((loaded / total) * 100);
+              // 每 10% 输出一次进度（可选，用于日志）
+              if (percent % 10 === 0) {
+                console.log(`下载进度: ${percent}%`);
+              }
+            }
+            controller.enqueue(value);
+            push();
+          }).catch(err => controller.error(err));
+        }
+
+        push();
+      }
     });
+
+    return new Response(stream, { status: resp.status, headers: responseHeaders });
   } catch (err) {
     return new Response(
       JSON.stringify({ code: 500, message: err.message || '内部错误' }),
