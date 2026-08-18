@@ -3,7 +3,7 @@
  * 支持 B站视频页面链接 或 CDN 直链
  */
 
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'edge' };
 export const dynamic = 'force-dynamic';
 
 // ===== 工具函数 =====
@@ -38,8 +38,14 @@ async function resolveFinalPageUrl(targetUrl) {
 }
 
 async function getAnonCookie() {
-  // 简化：使用固定 cookie，实际可复用 [...path].js 的完整逻辑
-  return 'buvid3=xxx; b_nut=xxx; ...';
+  // 从环境变量读取 Cookie，部署时需在 Vercel 设置环境变量 BILI_COOKIE
+  const cookie = process.env.BILI_COOKIE;
+  if (!cookie) {
+    console.warn('未设置 BILI_COOKIE 环境变量，可能无法正常访问 B站 API');
+    // 返回一个基本的 User-Agent，但可能失效
+    return '';
+  }
+  return cookie;
 }
 
 // ===== 主处理 =====
@@ -77,7 +83,7 @@ export default async function handler(request) {
       const viewResp = await fetch(viewUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0',
-          'Referer': 'https://www.bilibili.com/',
+          'Referer': 'https://www.bilibili.com',
           'Cookie': await getAnonCookie(),
         },
       });
