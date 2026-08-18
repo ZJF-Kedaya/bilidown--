@@ -3,7 +3,7 @@
  * 支持 B站视频页面链接 或 CDN 直链
  */
 
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'edge' };
 export const dynamic = 'force-dynamic';
 
 // ===== 工具函数 =====
@@ -134,9 +134,6 @@ export default async function handler(request) {
     const contentRange = resp.headers.get('Content-Range');
     const encodedName = encodeURIComponent(filename).replace(/'/g, '%27');
 
-    // 获取原始响应体
-    const body = resp.body;
-
     const responseHeaders = {
       ...corsHeaders(),
       'Content-Type': contentType,
@@ -147,37 +144,7 @@ export default async function handler(request) {
     if (contentLength) responseHeaders['Content-Length'] = contentLength;
     if (contentRange) responseHeaders['Content-Range'] = contentRange;
 
-    // 使用 ReadableStream 监控进度并流式传输
-    const stream = new ReadableStream({
-      start(controller) {
-        const reader = body.getReader();
-        let loaded = 0;
-        const total = parseInt(contentLength || '0', 10);
-
-        function push() {
-          reader.read().then(({ done, value }) => {
-            if (done) {
-              controller.close();
-              return;
-            }
-            loaded += value.length;
-            if (total > 0) {
-              const percent = Math.round((loaded / total) * 100);
-              // 每 10% 输出一次进度（可选，用于日志）
-              if (percent % 10 === 0) {
-                console.log(`下载进度: ${percent}%`);
-              }
-            }
-            controller.enqueue(value);
-            push();
-          }).catch(err => controller.error(err));
-        }
-
-        push();
-      }
-    });
-
-    return new Response(stream, { status: resp.status, headers: responseHeaders });
+    return new Response(resp.body, { status: resp.status, headers: responseHeaders });
   } catch (err) {
     return new Response(
       JSON.stringify({ code: 500, message: err.message || '内部错误' }),
