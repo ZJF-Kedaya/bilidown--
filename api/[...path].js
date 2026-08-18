@@ -29,6 +29,9 @@ const MIXIN_KEY_ENC_TAB = [
   36, 20, 34, 44, 52
 ];
 
+const CACHE_WBI_MS = 5 * 60 * 1000;
+const CACHE_ANON_MS = 15 * 60 * 1000;
+
 let wbiKeysCache = { img_key: '', sub_key: '', update_time: 0 };
 let wbiKeysPromise = null;
 let anonCookieCache = { cookie: '', update_time: 0 };
@@ -154,7 +157,7 @@ function parseSetCookies(setCookieHeader) {
 }
 
 async function getAnonCookie() {
-  if (anonCookieCache.cookie && Date.now() - anonCookieCache.update_time < 1800000) {
+  if (anonCookieCache.cookie && Date.now() - anonCookieCache.update_time < CACHE_ANON_MS) {
     return anonCookieCache.cookie;
   }
   if (anonCookiePromise) return anonCookiePromise;
@@ -376,30 +379,29 @@ async function proxyFetch(url, extraCookie, options = {}) {
   if (options.referer) headers['Referer'] = options.referer;
   if (options.range) headers['Range'] = options.range;
 
-  const anonCookie = await getAnonCookie();
-  const cookieParts = [anonCookie];
-  if (extraCookie) cookieParts.push(extraCookie);
-  headers['Cookie'] = cookieParts.join('; ');
+  const maxAttempts = 3;
+  let resp = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const anonCookie = await getAnonCookie();
+    const cookieParts = [anonCookie];
+    if (extraCookie) cookieParts.push(extraCookie);
+    headers['Cookie'] = cookieParts.join('; ');
 
-  let resp = await fetch(url, {
-    headers: safeHeaders(headers),
-    redirect: 'follow',
-  });
-
-  if (resp.status === 412) {
-    anonCookieCache = { cookie: '', update_time: 0 };
-    const freshCookie = await getAnonCookie();
-    const retryHeaders = { ...API_HEADERS };
-    if (options.referer) retryHeaders['Referer'] = options.referer;
-    if (options.range) retryHeaders['Range'] = options.range;
-    retryHeaders['Cookie'] = [freshCookie, extraCookie].filter(Boolean).join('; ');
-    await new Promise(r => setTimeout(r, 300));
     resp = await fetch(url, {
-      headers: safeHeaders(retryHeaders),
+      headers: safeHeaders(headers),
       redirect: 'follow',
     });
+
+    if (resp.status !== 412) {
+      return resp;
+    }
+
+    // 412: 刷新缓存并重试，延迟逐渐增加
+    anonCookieCache = { cookie: '', update_time: 0 };
+    await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
   }
 
+  // 最后一次尝试（可能仍为412）
   return resp;
 }
 
@@ -419,7 +421,7 @@ function jsonResponse(data, status = 200) {
   });
 }
 
-async function handleApiProxy(targetUrl, cookie) {
+async function handleApiProxy(targetUrl, cookie, debug = false) {
   let fetchUrl = targetUrl;
   const needWbi = targetUrl.includes('/x/space/wbi/') || targetUrl.includes('/x/wbi/');
   if (needWbi) {
@@ -438,7 +440,15 @@ async function handleApiProxy(targetUrl, cookie) {
   if (resp.status === 412) {
     return jsonResponse({
       code: -412,
-      message: '请求被B站风控拦截(412)。可能原因：1) Vercel出口IP被标记，可稍后重试或换Region；2) 缺少登录态，请在页面填入SESSDATA；3) 短期内请求过多，请等待10-30分钟。'
+      message: '请求被B站风控拦截(412)。可能原因：1) Vercel出口IP被标记，可稍后重试或换Region；2) 缺少登录态，请在页面填入SESSDATA；3) 短期内请求过多，请等待10-30分钟。',
+      diagnostics: {
+        targetUrl: targetUrl,
+        hasAnonCookie: !!anonCookieCache.cookie,
+        anonCookieAgeMinutes: anonCookieCache.cookie ? Math.floor((Date.now() - anonCookieCache.update_time) / 60000) : -1,
+        hasWbiKeys: !!wbiKeysCache.img_key,
+        wbiAgeMinutes: wbiKeysCache.update_time ? Math.floor((Date.now() - wbiKeysCache.update_time) / 60000) : -1,
+        hasDefaultCookie: !!DEFAULT_COOKIE,
+      }
     }, 412);
   }
 
