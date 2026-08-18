@@ -65,7 +65,7 @@ export default async function handler(request) {
     const contentType = resp.headers.get('Content-Type') || 'videomp4';
     const contentRange = resp.headers.get('Content-Range');
 
-    const encodedName = encodeURIComponent(filename).replace('g, '%27');
+    const encodedName = encodeURIComponent(filename).replace(/'/g, '%27');
 
     const responseHeaders = {
       ...cor
