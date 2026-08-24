@@ -1,6 +1,6 @@
 # Bilibili 视频解析 - Vercel Edge 部署
 
-本项目是一个部署在 Vercel Edge Runtime 的 Bilibili 视频分辨率代理服务，从 Cloudflare Worker 迁移而来。
+本项目是一个部署在 Vercel Edge Runtime 的 Bilibili 视频分辨率代理服务。
 
 ## 功能特点
 
