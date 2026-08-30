@@ -153,12 +153,18 @@ export default async function handler(request) {
     const contentLength = resp.headers.get('Content-Length');
     const contentType = resp.headers.get('Content-Type') || 'video/mp4';
     const contentRange = resp.headers.get('Content-Range');
-    const encodedName = encodeURIComponent(filename).replace(/'/g, '%27');
+    // OpenList SimpleHttp 用 mime.ParseMediaType 读取 Content-Disposition 的 filename 字段，
+    // 且不会解析百分号编码：中文名 percent-encode 后会被保存成 "%E6%A0%87..." 字面量，
+    // 转存阶段按原名找不到该文件 → 报 FileNotFound。
+    // 因此 filename 用稳定 ASCII 名，filename* 保留 UTF-8 原名给浏览器（浏览器优先 filename*）。
+    const utf8Name = encodeURIComponent(filename).replace(/'/g, '%27');
+    const ext = (filename.match(/\.[^.]+$/) || ['.mp4'])[0];
+    const asciiName = 'download' + ext;
 
     const responseHeaders = {
       ...corsHeaders(),
       'Content-Type': contentType,
-      'Content-Disposition': `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`,
+      'Content-Disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`,
       'Accept-Ranges': 'none',
       'Cache-Control': 'public, max-age=3600',
     };

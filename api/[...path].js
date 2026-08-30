@@ -464,7 +464,10 @@ async function handleApiProxy(targetUrl, cookie) {
     let urlExt = '';
     try { urlExt = (new URL(targetUrl).pathname.match(/\.[a-zA-Z0-9]{2,5}$/) || [null])[0] || ''; } catch {}
     const ext = extMap[mime] || urlExt || '.bin';
-    const disposition = `attachment; filename="dl_${Date.now()}${ext}"`;
+    // 文件名必须确定：OpenList stream-put 模式会先 HEAD 后 GET，两次请求 filename 不同会导致转存 FileNotFound。
+    // 纯 ASCII 名避开 mime.ParseMediaType 不解码百分号编码中文名的问题。
+    const disposition = `attachment; filename="media${ext}"`;
+
 
     if (contentType.startsWith('image/')) {
       // 图片体积小，缓冲后显式返回 Content-Length，避免 chunked 导致 SimpleHttp ContentLength=-1
