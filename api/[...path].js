@@ -451,11 +451,37 @@ async function handleApiProxy(targetUrl, cookie) {
   }
 
   if (contentType.startsWith('image/') || contentType.startsWith('video/')) {
-    const headers = { ...corsHeaders(), 'Content-Type': contentType };
+    // OpenList SimpleHttp 依赖 Content-Disposition 提取临时文件名；缺失时会退化用 URL 路径
+    // 基名(apiapi)，保存成无扩展名的 "api"，后续转存目标存储时报 File not found。
+    // 同时 SimpleHttp 用 resp.ContentLength 显示进度写盘，Vercel Edge 流式返回可能变 chunked
+    // (Content-Length 缺失)，导致 ContentLength=-1 写入异常。小文件缓冲后显式给出解决。
+    const extMap = {
+      'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp',
+      'image/gif': '.gif', 'image/avif': '.avif',
+      'video/mp4': '.mp4', 'video/webm': '.webm',
+    };
+    const mime = contentType.split(';')[0].trim();
+    let urlExt = '';
+    try { urlExt = (new URL(targetUrl).pathname.match(/\.[a-zA-Z0-9]{2,5}$/) || [null])[0] || ''; } catch {}
+    const ext = extMap[mime] || urlExt || '.bin';
+    const disposition = `attachment; filename="dl_${Date.now()}${ext}"`;
+
+    if (contentType.startsWith('image/')) {
+      // 图片体积小，缓冲后显式返回 Content-Length，避免 chunked 导致 SimpleHttp ContentLength=-1
+      const buf = await resp.arrayBuffer();
+      const headers = {
+        ...corsHeaders(),
+        'Content-Type': contentType,
+        'Content-Length': String(buf.byteLength),
+        'Content-Disposition': disposition,
+      };
+      return new Response(buf, { status: 200, headers });
+    }
+
+    // 视频体积大保持流式，补 Content-Disposition 并尽力透传 Content-Length
+    const headers = { ...corsHeaders(), 'Content-Type': contentType, 'Content-Disposition': disposition };
     const cl = resp.headers.get('Content-Length');
     if (cl) headers['Content-Length'] = cl;
-    const cc = resp.headers.get('Cache-Control');
-    if (cc) headers['Cache-Control'] = cc;
     return new Response(resp.body, { status: resp.status, headers });
   }
 
