@@ -1394,12 +1394,12 @@ function renderDynamic(images, item) {
     document.getElementById('dynamicImageList').innerHTML = gridHtml;
 }
 
-// 一键复制所有图片下载链接（每行一个）
+// 一键复制所有图片下载链接（每行一个，均为后端代理直链，已绕过 B站防盗链）
 function copyDynamicImages() {
     if (dynamicImages.length === 0) { showToast('没有可复制的图片链接', 'error'); return; }
-    const text = dynamicImages.join('\n');
+    const text = dynamicImages.map(buildAbsApiProxyUrl).join('\n');
     navigator.clipboard.writeText(text).then(() => {
-        showToast(`已复制 ${dynamicImages.length} 个图片下载链接`, 'success');
+        showToast(`已复制 ${dynamicImages.length} 个图片下载链接（已绕过防盗链）`, 'success');
     }).catch(() => {
         const t = document.createElement('textarea'); t.value = text;
         document.body.appendChild(t); t.select(); document.execCommand('copy');
@@ -1409,9 +1409,10 @@ function copyDynamicImages() {
 
 function copyDynamicImage(idx) {
     if (!dynamicImages[idx]) return;
-    navigator.clipboard.writeText(dynamicImages[idx]).then(() => showToast('图片下载链接已复制', 'success'))
+    const proxyUrl = buildAbsApiProxyUrl(dynamicImages[idx]);
+    navigator.clipboard.writeText(proxyUrl).then(() => showToast('图片下载链接已复制（已绕过防盗链）', 'success'))
         .catch(() => {
-            const t = document.createElement('textarea'); t.value = dynamicImages[idx];
+            const t = document.createElement('textarea'); t.value = proxyUrl;
             document.body.appendChild(t); t.select(); document.execCommand('copy');
             document.body.removeChild(t); showToast('图片下载链接已复制', 'success');
         });
@@ -1573,7 +1574,7 @@ function updateCard(id, info) {
             <button class="btn btn-primary btn-sm" onclick="downloadVideo('${encodeURIComponent(videoUrl)}', '${encodeURIComponent(info.title)}')">下载视频</button>
             ${backupUrl?`<button class="btn btn-outline btn-sm" onclick="downloadVideo('${encodeURIComponent(backupUrl)}', '${encodeURIComponent(info.title)}')">备用线路</button>`:''}
             <button class="btn btn-outline btn-sm" onclick="playInPage('${encodeURIComponent(info.bvid)}')">在线播放</button>
-            <button class="btn btn-outline btn-sm" onclick="copyLink('${encodeURIComponent(videoUrl)}')">复制链接</button>
+            <button class="btn btn-outline btn-sm" onclick="copyDownloadLink('${encodeURIComponent(videoUrl)}', '${encodeURIComponent(info.title)}')">复制链接</button>
         </div>`;
     }
 
@@ -1710,6 +1711,39 @@ function buildDownloadProxyUrl(videoUrl, filename) {
     return url;
 }
 
+// 构建绝对地址的代理链接（用于复制到外部下载器 / 网盘离线下载）
+// Vercel 同源时 backendPath 返回相对路径，这里补全 origin，保证 openlist/IDM 等外部工具可直接访问
+function absBackendPath(path) {
+    const p = backendPath(path);
+    return p.startsWith('http') ? p : window.location.origin + p;
+}
+
+// 视频代理下载直链（绝对地址，后端自动加 Referer 绕过 B站防盗链）
+function buildAbsDownloadProxyUrl(videoUrl, filename) {
+    let url = `${absBackendPath('/download')}?url=${encodeURIComponent(videoUrl)}&name=${encodeURIComponent(filename)}`;
+    if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
+    return url;
+}
+
+// 图片/通用资源代理直链（绝对地址，后端自动加 Referer）
+function buildAbsApiProxyUrl(rawUrl) {
+    return `${absBackendPath('/api')}?url=${encodeURIComponent(rawUrl)}`;
+}
+
+// 复制单条视频的代理下载链接（替代旧的裸链 copyLink，用于"复制链接"按钮）
+function copyDownloadLink(encodedVideoUrl, encodedTitle) {
+    const raw = decodeURIComponent(encodedVideoUrl);
+    const title = decodeURIComponent(encodedTitle || '').replace(/[\\/:*?"<>|]/g, '_') || 'video';
+    const proxyUrl = buildAbsDownloadProxyUrl(raw, title + '.mp4');
+    const tip = '代理下载链接已复制（已绕过防盗链），可粘贴到 openlist 离线下载 / IDM / 浏览器';
+    navigator.clipboard.writeText(proxyUrl).then(() => showToast(tip, 'success'))
+        .catch(() => {
+            const t = document.createElement('textarea'); t.value = proxyUrl;
+            document.body.appendChild(t); t.select(); document.execCommand('copy');
+            document.body.removeChild(t); showToast(tip, 'success');
+        });
+}
+
 // 浏览器直接下载（顺序流式拉取，经 Vercel Edge 流式转发，不受单次响应大小限制）
 async function browserDownload(videoUrl, filename, progressEl) {
     // 进度条控制
@@ -1832,15 +1866,15 @@ async function downloadVideo(encodedUrl, encodedTitle) {
     const mode = getDownloadMode();
 
     if (mode === 'copy') {
-        // 复制 Vercel 代理 URL（浏览器粘贴地址栏可直接下载）
-        const proxyUrl = buildDownloadProxyUrl(url, title + '.mp4');
+        // 复制绝对地址的 Vercel 代理 URL（粘贴到 openlist 离线下载 / IDM / 浏览器均可，后端自动加 Referer）
+        const proxyUrl = buildAbsDownloadProxyUrl(url, title + '.mp4');
         copyLink(encodeURIComponent(proxyUrl));
-        showToast('代理链接已复制，粘贴到浏览器地址栏可直接下载', 'success');
+        showToast('代理链接已复制（已绕过防盗链），可粘贴到 openlist 离线下载 / IDM / 浏览器', 'success');
         return;
     }
 
     if (mode === 'open') {
-        const proxyUrl = buildDownloadProxyUrl(url, title + '.mp4');
+        const proxyUrl = buildAbsDownloadProxyUrl(url, title + '.mp4');
         window.open(proxyUrl, '_blank');
         return;
     }
@@ -1861,14 +1895,14 @@ async function downloadDashStream(encodedUrl, encodedTitle) {
     const mode = getDownloadMode();
 
     if (mode === 'copy') {
-        const proxyUrl = buildDownloadProxyUrl(url, title);
+        const proxyUrl = buildAbsDownloadProxyUrl(url, title);
         copyLink(encodeURIComponent(proxyUrl));
-        showToast('代理链接已复制，粘贴到浏览器地址栏可直接下载', 'success');
+        showToast('代理链接已复制（已绕过防盗链），可粘贴到 openlist 离线下载 / IDM / 浏览器', 'success');
         return;
     }
 
     if (mode === 'open') {
-        const proxyUrl = buildDownloadProxyUrl(url, title);
+        const proxyUrl = buildAbsDownloadProxyUrl(url, title);
         window.open(proxyUrl, '_blank');
         return;
     }
@@ -1906,12 +1940,13 @@ function copyAllLinks() {
     const links = [];
     for (const info of parsedVideos) {
         if (info.playData?.durl?.length > 0) {
-            links.push(info.playData.durl[0].url);
+            const title = (info.title || 'video').replace(/[\\/:*?"<>|]/g, '_');
+            links.push(buildAbsDownloadProxyUrl(info.playData.durl[0].url, title + '.mp4'));
         }
     }
     if (links.length === 0) { showToast('没有可下载的链接', 'error'); return; }
     navigator.clipboard.writeText(links.join('\n')).then(() => {
-        showToast(`已复制 ${links.length} 个下载链接`, 'success');
+        showToast(`已复制 ${links.length} 个下载链接（已绕过防盗链）`, 'success');
     }).catch(() => {
         const t = document.createElement('textarea'); t.value = links.join('\n');
         document.body.appendChild(t); t.select(); document.execCommand('copy');
