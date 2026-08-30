@@ -464,9 +464,18 @@ async function handleApiProxy(targetUrl, cookie) {
     let urlExt = '';
     try { urlExt = (new URL(targetUrl).pathname.match(/\.[a-zA-Z0-9]{2,5}$/) || [null])[0] || ''; } catch {}
     const ext = extMap[mime] || urlExt || '.bin';
-    // 文件名必须确定：OpenList stream-put 模式会先 HEAD 后 GET，两次请求 filename 不同会导致转存 FileNotFound。
-    // 纯 ASCII 名避开 mime.ParseMediaType 不解码百分号编码中文名的问题。
-    const disposition = `attachment; filename="media${ext}"`;
+    // 文件名：优先用 URL 原始 basename（保留原名，下载多张不会相互覆盖；纯 ASCII 也避开
+    // OpenList mime.ParseMediaType 不解码中文/百分号编码的问题）；否则退回 media${ext}。
+    let baseName = 'media';
+    try {
+      const p = new URL(targetUrl).pathname;
+      const b = p.substring(p.lastIndexOf('/') + 1).split(/[?&]/)[0];
+      if (b) {
+        const safe = b.replace(/[^A-Za-z0-9._-]/g, '_');
+        if (safe && safe !== '/') baseName = safe;
+      }
+    } catch {}
+    const disposition = `attachment; filename="${baseName}${/\.(jpe?g|png|webp|gif|avif|mp4|webm)$/i.test(baseName) ? '' : ext}"`;
 
 
     if (contentType.startsWith('image/')) {
