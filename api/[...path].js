@@ -754,69 +754,43 @@ export default async function handler(request) {
       const range = request.headers.get('Range'); // 支持 Range 分片请求
       let resolvedUrl = request.headers.get('X-Resolved-Url'); // 前端提供的已解析 CDN URL
 
-      // 请求 B站 URL 所需的 headers
-      const anonCookie = await getAnonCookie();
-      const cookieParts = [anonCookie];
-      if (cookie) cookieParts.push(cookie);
-      const bilibiliHeaders = {
-        ...API_HEADERS,
-        'Referer': 'https://www.bilibili.com/',
-        'Cookie': cookieParts.join('; '),
+      // 单次请求：对（已解析或原始）B站 URL 手动跟随重定向，每一跳都带 Range + Referer。
+      // 旧实现先做一次"裸 GET 解析重定向"（不带 Range、整文件 GET 且不消费 body）再发 Range 请求，
+      // 导致每个分片/续传请求都多打一次整文件 GET，易被 B站风控(412)在中途掐断
+      // → OpenList 等多分片下载器在固定比例处报 File not found。
+      // 现合并为单次手动跟随：200/206 直接取用其 body 流；302 则逐跳带上 Range+Referer 跟到最终 URL。
+      const fetchUrl = resolvedUrl || targetUrl;
+      const fetchHeaders = { ...API_HEADERS };
+      if (range) fetchHeaders['Range'] = range;
+      fetchHeaders['Referer'] = 'https://www.bilibili.com/';
+
+      const fetchWithRedirects = async (startUrl, hdrs) => {
+        let currentUrl = startUrl;
+        let r = await fetch(currentUrl, { headers: safeHeaders(hdrs), redirect: 'manual' });
+        let hops = 0;
+        while (r.status >= 300 && r.status < 400 && hops < 5) {
+          let loc = r.headers.get('Location');
+          if (!loc) break;
+          if (loc.startsWith('/')) loc = new URL(loc, currentUrl).toString();
+          currentUrl = loc;
+          r = await fetch(currentUrl, { headers: safeHeaders(hdrs), redirect: 'manual' });
+          hops++;
+        }
+        return { resp: r, finalUrl: currentUrl };
       };
 
-      // 如果没有已解析的 CDN URL，先通过 B站 URL 跟随重定向拿到最终 CDN URL
-      if (!resolvedUrl) {
-        const resolveFinalUrl = async () => {
-          let currentUrl = targetUrl;
-          let resp = await fetch(currentUrl, {
-            headers: safeHeaders(bilibiliHeaders),
-            redirect: 'manual',
-          });
-          let redirects = 0;
-          while (resp.status >= 300 && resp.status < 400 && redirects < 5) {
-            let loc = resp.headers.get('Location');
-            if (!loc) break;
-            if (loc.startsWith('/')) loc = new URL(loc, currentUrl).toString();
-            currentUrl = loc;
-            redirects++;
-            resp = await fetch(currentUrl, {
-              headers: safeHeaders(bilibiliHeaders),
-              redirect: 'manual',
-            });
-          }
-          return { resp, finalUrl: currentUrl };
-        };
+      let { resp, finalUrl } = await fetchWithRedirects(fetchUrl, fetchHeaders);
+      resolvedUrl = finalUrl;
 
-        let { resp, finalUrl } = await resolveFinalUrl();
-        if (resp.status === 412) {
-          anonCookieCache = { cookie: '', update_time: 0 };
-          const freshCookie = await getAnonCookie();
-          bilibiliHeaders['Cookie'] = [freshCookie, cookie].filter(Boolean).join('; ');
-          ({ resp, finalUrl } = await resolveFinalUrl());
-        }
-        resolvedUrl = finalUrl;
-      }
-
-      // 用最终 CDN URL 发 Range 请求（直接请求 CDN，避免每次重新走 B站重定向链）
-      const cdnHeaders = { ...API_HEADERS };
-      if (range) cdnHeaders['Range'] = range;
-      // CDN 通常需要 Referer，但不要 Cookie
-      cdnHeaders['Referer'] = 'https://www.bilibili.com/';
-
-      let resp = await fetch(resolvedUrl, {
-        headers: safeHeaders(cdnHeaders),
-        redirect: 'follow',
-      });
-
-      // 412 风控时刷新 Cookie 重试（针对最终 URL）
+      // 412 风控时刷新匿名 Cookie 重试一次（带上 Cookie）
       if (resp.status === 412) {
         anonCookieCache = { cookie: '', update_time: 0 };
         const freshCookie = await getAnonCookie();
-        cdnHeaders['Cookie'] = [freshCookie, cookie].filter(Boolean).join('; ');
-        resp = await fetch(resolvedUrl, {
-          headers: safeHeaders(cdnHeaders),
-          redirect: 'follow',
-        });
+        const retryCookieParts = [freshCookie];
+        if (cookie) retryCookieParts.push(cookie);
+        fetchHeaders['Cookie'] = retryCookieParts.join('; ');
+        ({ resp, finalUrl } = await fetchWithRedirects(fetchUrl, fetchHeaders));
+        resolvedUrl = finalUrl;
       }
 
       const encodedFilename = encodeURIComponent(filename).replace(/'/g, '%27');

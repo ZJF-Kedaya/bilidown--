@@ -127,7 +127,25 @@ export default async function handler(request) {
     };
     if (range) headers['Range'] = range;
 
-    const resp = await fetch(targetUrl, { headers, redirect: 'follow' });
+    // 手动跟随重定向：每一跳都带 Range + Referer，避免 follow 模式在跨域 302 跳转时
+    // 丢失 Referer/Range，导致 B站 CDN 返回 403 或整文件 200，使 SimpleHttp 等分片
+    // 下载器在固定比例处报 File not found。200/206 直接取用其 body 流。
+    const fetchWithRedirects = async (startUrl, hdrs) => {
+      let currentUrl = startUrl;
+      let r = await fetch(currentUrl, { headers: hdrs, redirect: 'manual' });
+      let hops = 0;
+      while (r.status >= 300 && r.status < 400 && hops < 5) {
+        let loc = r.headers.get('Location');
+        if (!loc) break;
+        if (loc.startsWith('/')) loc = new URL(loc, currentUrl).toString();
+        currentUrl = loc;
+        r = await fetch(currentUrl, { headers: hdrs, redirect: 'manual' });
+        hops++;
+      }
+      return r;
+    };
+
+    const resp = await fetchWithRedirects(targetUrl, headers);
     if (!resp.ok) {
       return new Response(
         JSON.stringify({ code: resp.status, message: `下载失败: ${resp.statusText}` }),
