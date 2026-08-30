@@ -751,17 +751,14 @@ export default async function handler(request) {
       if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
       const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
       const filename = url.searchParams.get('name') || 'video.mp4';
-      const range = request.headers.get('Range'); // 支持 Range 分片请求
       let resolvedUrl = request.headers.get('X-Resolved-Url'); // 前端提供的已解析 CDN URL
 
-      // 单次请求：对（已解析或原始）B站 URL 手动跟随重定向，每一跳都带 Range + Referer。
-      // 旧实现先做一次"裸 GET 解析重定向"（不带 Range、整文件 GET 且不消费 body）再发 Range 请求，
-      // 导致每个分片/续传请求都多打一次整文件 GET，易被 B站风控(412)在中途掐断
-      // → OpenList 等多分片下载器在固定比例处报 File not found。
-      // 现合并为单次手动跟随：200/206 直接取用其 body 流；302 则逐跳带上 Range+Referer 跟到最终 URL。
+      // 单次请求：对（已解析或原始）B站 URL 手动跟随重定向，每一跳都带 Referer。
+      // 旧实现先做一次"裸 GET 解析重定向"再发请求，且每分片都带 Range，会触发 B站对
+      // 代理出口 IP 的分片风控(412)，导致 OpenList 等下载器在固定比例处报 File not found。
+      // 现合并为单次手动跟随，且不转发客户端的 Range：强制整文件单流返回。200/206 直接取用 body 流。
       const fetchUrl = resolvedUrl || targetUrl;
       const fetchHeaders = { ...API_HEADERS };
-      if (range) fetchHeaders['Range'] = range;
       fetchHeaders['Referer'] = 'https://www.bilibili.com/';
 
       const fetchWithRedirects = async (startUrl, hdrs) => {
@@ -798,7 +795,7 @@ export default async function handler(request) {
         ...corsHeaders(),
         'Content-Type': resp.headers.get('Content-Type') || 'video/mp4',
         'Content-Disposition': `attachment; filename="${encodedFilename}"`,
-        'Accept-Ranges': 'bytes',
+        'Accept-Ranges': 'none',
         'Cache-Control': 'public, max-age=3600',
         'Access-Control-Expose-Headers': 'X-Resolved-Url, Content-Range',
         'X-Resolved-Url': resolvedUrl,

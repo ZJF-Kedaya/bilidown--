@@ -64,7 +64,6 @@ export default async function handler(request) {
   }
 
   let filename = url.searchParams.get('name') || 'video.mp4';
-  const range = request.headers.get('Range');
 
   try {
     // 如果是 B站视频页面，自动解析
@@ -125,11 +124,9 @@ export default async function handler(request) {
       'Origin': 'https://www.bilibili.com',
       'Cookie': await getAnonCookie(),
     };
-    if (range) headers['Range'] = range;
-
-    // 手动跟随重定向：每一跳都带 Range + Referer，避免 follow 模式在跨域 302 跳转时
-    // 丢失 Referer/Range，导致 B站 CDN 返回 403 或整文件 200，使 SimpleHttp 等分片
-    // 下载器在固定比例处报 File not found。200/206 直接取用其 body 流。
+    // 不转发客户端的 Range：强制整文件单流返回，避免 OpenList SimpleHttp 分片请求被
+    // B站对代理出口 IP 风控而在固定比例处失败（浏览器本就是单流，故正常）。
+    // 手动跟随重定向：每跳带 Referer，避免 follow 模式在跨域 302 跳转时丢失 Referer。
     const fetchWithRedirects = async (startUrl, hdrs) => {
       let currentUrl = startUrl;
       let r = await fetch(currentUrl, { headers: hdrs, redirect: 'manual' });
@@ -162,7 +159,7 @@ export default async function handler(request) {
       ...corsHeaders(),
       'Content-Type': contentType,
       'Content-Disposition': `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`,
-      'Accept-Ranges': 'bytes',
+      'Accept-Ranges': 'none',
       'Cache-Control': 'public, max-age=3600',
     };
     if (contentLength) responseHeaders['Content-Length'] = contentLength;
