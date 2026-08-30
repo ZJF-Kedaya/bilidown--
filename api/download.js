@@ -3,7 +3,7 @@
  * 支持 B站视频页面链接 或 CDN 直链
  */
 
-export const config = { runtime: 'nodejs' };
+export const config = { runtime: 'edge' };
 export const dynamic = 'force-dynamic';
 
 // ===== 工具函数 =====
