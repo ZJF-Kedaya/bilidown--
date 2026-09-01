@@ -30,6 +30,7 @@ const API_HEADERS = {
   'sec-fetch-dest': 'empty',
   'sec-fetch-mode': 'cors',
   'sec-fetch-site': 'same-site',
+  'X-Bili-Ftrace-Id': generateRandom(16, '0123456789abcdef') + ':0',
 };
 
 // 默认登录 Cookie：通过 Vercel 环境变量 DEFAULT_SESSDATA 配置（与 [...path].js 同步）
@@ -266,10 +267,11 @@ export default async function handler(request) {
   }
 
   let filename = url.searchParams.get('name') || 'video.mp4';
-  // 优先用请求携带的登录 Cookie（与前端 /api/api 流程一致），否则用环境变量
+  // 登录 Cookie 优先级：请求参数 cookie > 环境变量 DEFAULT_SESSDATA > 匿名
   const requestCookie = url.searchParams.get('cookie') || '';
   const effectiveCookieStr = requestCookie || DEFAULT_COOKIE;
-  const buildCookieHeader = async () => [effectiveCookieStr, await getAnonCookie()].filter(Boolean).join('; ');
+  // 与 [...path].js proxyFetch 一致：匿名 Cookie 在前，登录 Cookie 在后
+  const buildCookieHeader = async () => [await getAnonCookie(), effectiveCookieStr].filter(Boolean).join('; ');
 
   try {
     // 如果是 B站视频页面，自动解析为直链
@@ -297,7 +299,7 @@ export default async function handler(request) {
         return new Response(
           JSON.stringify({
             code: -1,
-            message: '获取视频信息失败（B站可能返回了风控页面，请稍后重试或配置环境变量 BILI_COOKIE 为 SESSDATA）',
+            message: '获取视频信息失败（B站返回了风控页面）。请通过 cookie 参数传入有效登录 Cookie，例如 &cookie=SESSDATA%3Dxxx（值需URL编码），或在 Vercel 环境变量更新 DEFAULT_SESSDATA',
             httpStatus: viewResp.status,
           }),
           { status: 400, headers: { ...corsHeaders(), 'Content-Type': 'application/json' } }
@@ -315,7 +317,7 @@ export default async function handler(request) {
         return new Response(
           JSON.stringify({
             code: -1,
-            message: '获取播放地址失败（B站可能返回了风控页面，请稍后重试或配置环境变量 BILI_COOKIE 为 SESSDATA）',
+            message: '获取播放地址失败（B站返回了风控页面）。请通过 cookie 参数传入有效登录 Cookie，例如 &cookie=SESSDATA%3Dxxx（值需URL编码），或在 Vercel 环境变量更新 DEFAULT_SESSDATA',
             httpStatus: playResp.status,
           }),
           { status: 400, headers: { ...corsHeaders(), 'Content-Type': 'application/json' } }
