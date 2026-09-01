@@ -32,6 +32,12 @@ const API_HEADERS = {
   'sec-fetch-site': 'same-site',
 };
 
+// 默认登录 Cookie：通过 Vercel 环境变量 DEFAULT_SESSDATA 配置（与 [...path].js 同步）
+const DEFAULT_COOKIE = (() => {
+  const sess = (typeof process !== 'undefined' && process.env.DEFAULT_SESSDATA) || '';
+  return sess ? 'SESSDATA=' + sess : '';
+})();
+
 const BROWSER_VISIT_HEADERS = {
   'User-Agent': BROWSER_UA,
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -266,7 +272,7 @@ export default async function handler(request) {
     if (isVideoPageUrl(targetUrl)) {
       // 短链先跟随重定向拿到最终页面 URL
       if (targetUrl.includes('b23.tv')) {
-        const finalUrl = await fetchWithRedirects(targetUrl, { ...API_HEADERS, 'Cookie': await getAnonCookie() });
+        const finalUrl = await fetchWithRedirects(targetUrl, { ...API_HEADERS, 'Cookie': [DEFAULT_COOKIE, await getAnonCookie()].filter(Boolean).join('; ') });
         targetUrl = finalUrl.url || targetUrl;
       }
       const bvid = extractBvid(targetUrl);
@@ -278,7 +284,7 @@ export default async function handler(request) {
       }
 
       const anonCookie = await getAnonCookie();
-      const apiHeaders = { ...API_HEADERS, 'Cookie': anonCookie };
+      const apiHeaders = { ...API_HEADERS, 'Cookie': [DEFAULT_COOKIE, anonCookie].filter(Boolean).join('; ') };
 
       // 1. 获取 cid
       const viewUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`;
@@ -320,7 +326,7 @@ export default async function handler(request) {
       ...API_HEADERS,
       'Referer': 'https://www.bilibili.com/',
       'Origin': 'https://www.bilibili.com',
-      'Cookie': await getAnonCookie(),
+      'Cookie': [DEFAULT_COOKIE, await getAnonCookie()].filter(Boolean).join('; '),
     };
 
     const resp = await fetchWithRedirects(targetUrl, downloadHeaders);
