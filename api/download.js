@@ -203,16 +203,33 @@ async function getAnonCookie() {
   return anonCookiePromise;
 }
 
-// 带 412 重试的 fetch
-async function fetchWithRetry(url, headers, options = {}) {
-  let resp = await fetch(url, { headers: safeHeaders(headers), ...options });
+// 带 Cookie 阶梯重试的 fetch：
+// 1) 匿名Cookie + 登录Cookie（用户cookie > 环境变量 DEFAULT_SESSDATA）
+// 2) 412 → 刷新匿名Cookie + 登录Cookie 重试
+// 3) 412 → 去掉登录Cookie（可能环境变量里的 SESSDATA 已失效反而触发封禁），仅用匿名Cookie
+async function fetchApiWithLadder(url, effectiveCookieStr) {
+  const buildHeaders = async (includeLogin) => {
+    const cookieParts = [await getAnonCookie()];
+    if (includeLogin && effectiveCookieStr) cookieParts.push(effectiveCookieStr);
+    return { ...API_HEADERS, 'Cookie': cookieParts.filter(Boolean).join('; ') };
+  };
+
+  let headers = await buildHeaders(true);
+  let resp = await fetch(url, { headers: safeHeaders(headers), redirect: 'follow' });
+
   if (resp.status === 412) {
     anonCookieCache = { cookie: '', update_time: 0 };
-    const freshCookie = await getAnonCookie();
-    headers['Cookie'] = freshCookie;
     await new Promise(r => setTimeout(r, 300));
-    resp = await fetch(url, { headers: safeHeaders(headers), ...options });
+    headers = await buildHeaders(true);
+    resp = await fetch(url, { headers: safeHeaders(headers), redirect: 'follow' });
   }
+
+  if (resp.status === 412 && effectiveCookieStr) {
+    await new Promise(r => setTimeout(r, 300));
+    headers = await buildHeaders(false);
+    resp = await fetch(url, { headers: safeHeaders(headers), redirect: 'follow' });
+  }
+
   return resp;
 }
 
@@ -289,11 +306,9 @@ export default async function handler(request) {
         );
       }
 
-      const apiHeaders = { ...API_HEADERS, 'Cookie': await buildCookieHeader() };
-
       // 1. 获取 cid
       const viewUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`;
-      const viewResp = await fetchWithRetry(viewUrl, apiHeaders, { redirect: 'follow' });
+      const viewResp = await fetchApiWithLadder(viewUrl, effectiveCookieStr);
       const viewData = await parseJsonOrNull(viewResp);
       if (!viewData || viewData.code !== 0 || !viewData.data) {
         return new Response(
@@ -311,7 +326,7 @@ export default async function handler(request) {
 
       // 2. 获取直链
       const playUrl = `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=64&fnval=1&platform=pc`;
-      const playResp = await fetchWithRetry(playUrl, apiHeaders, { redirect: 'follow' });
+      const playResp = await fetchApiWithLadder(playUrl, effectiveCookieStr);
       const playData = await parseJsonOrNull(playResp);
       if (!playData || playData.code !== 0 || !playData.data || !playData.data.durl || playData.data.durl.length === 0) {
         return new Response(
