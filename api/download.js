@@ -266,13 +266,17 @@ export default async function handler(request) {
   }
 
   let filename = url.searchParams.get('name') || 'video.mp4';
+  // 优先用请求携带的登录 Cookie（与前端 /api/api 流程一致），否则用环境变量
+  const requestCookie = url.searchParams.get('cookie') || '';
+  const effectiveCookieStr = requestCookie || DEFAULT_COOKIE;
+  const buildCookieHeader = async () => [effectiveCookieStr, await getAnonCookie()].filter(Boolean).join('; ');
 
   try {
     // 如果是 B站视频页面，自动解析为直链
     if (isVideoPageUrl(targetUrl)) {
       // 短链先跟随重定向拿到最终页面 URL
       if (targetUrl.includes('b23.tv')) {
-        const finalUrl = await fetchWithRedirects(targetUrl, { ...API_HEADERS, 'Cookie': [DEFAULT_COOKIE, await getAnonCookie()].filter(Boolean).join('; ') });
+        const finalUrl = await fetchWithRedirects(targetUrl, { ...API_HEADERS, 'Cookie': await buildCookieHeader() });
         targetUrl = finalUrl.url || targetUrl;
       }
       const bvid = extractBvid(targetUrl);
@@ -283,8 +287,7 @@ export default async function handler(request) {
         );
       }
 
-      const anonCookie = await getAnonCookie();
-      const apiHeaders = { ...API_HEADERS, 'Cookie': [DEFAULT_COOKIE, anonCookie].filter(Boolean).join('; ') };
+      const apiHeaders = { ...API_HEADERS, 'Cookie': await buildCookieHeader() };
 
       // 1. 获取 cid
       const viewUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`;
@@ -326,7 +329,7 @@ export default async function handler(request) {
       ...API_HEADERS,
       'Referer': 'https://www.bilibili.com/',
       'Origin': 'https://www.bilibili.com',
-      'Cookie': [DEFAULT_COOKIE, await getAnonCookie()].filter(Boolean).join('; '),
+      'Cookie': await buildCookieHeader(),
     };
 
     const resp = await fetchWithRedirects(targetUrl, downloadHeaders);
