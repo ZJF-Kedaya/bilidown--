@@ -548,6 +548,10 @@
 
 <div class="toast-container" id="toastContainer"></div>
 
+<!-- 1080P DASH 音视频合并所需库（参考油猴逻辑） -->
+<script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.1/build/mp4-muxer.js"></script>
+
 <script>
 // ==================== 全局状态 ====================
 let parsedVideos = [];
@@ -1625,6 +1629,7 @@ function updateCard(id, info) {
             <div class="dash-info-title">DASH流（需ffmpeg合并: ffmpeg -i video.m4s -i audio.m4s -c copy out.mp4）</div>
             <div class="dash-streams">${vStreams}${aStreams}</div>
             <div class="download-btns" style="margin-top:8px;">
+                ${bestV&&bestA?`<button class="btn btn-success btn-sm" onclick="downloadDashMerged('${encodeURIComponent(bestV)}','${encodeURIComponent(bestA)}','${encodeURIComponent(info.title)}')">一键合并下载(完整音画)</button>`:''}
                 ${bestV?`<button class="btn btn-outline btn-sm" onclick="downloadDashStream('${encodeURIComponent(bestV)}', '${encodeURIComponent(info.title)}_video.m4s')">下载视频流</button>`:''}
                 ${bestA?`<button class="btn btn-outline btn-sm" onclick="downloadDashStream('${encodeURIComponent(bestA)}', '${encodeURIComponent(info.title)}_audio.m4s')">下载音频流</button>`:''}
                 <button class="btn btn-outline btn-sm" onclick="playInPage('${encodeURIComponent(info.bvid)}')">在线播放</button>
@@ -1960,6 +1965,199 @@ function copyLink(encodedUrl) {
             document.body.appendChild(t); t.select(); document.execCommand('copy');
             document.body.removeChild(t); showToast('链接已复制', 'success');
         });
+}
+
+// ==================== 1080P DASH 一键合并下载（浏览器端 remux，参考油猴脚本） ====================
+// Vercel Edge 服务端无法合并音视频（无 ffmpeg、函数超时/内存限制），
+// 因此完整 1080P（音画齐全）在前端浏览器用 mp4box + mp4-muxer 合并。
+
+function dashLibsAvailable() {
+    return (typeof MP4Box !== 'undefined' && typeof MP4Box.createFile === 'function') &&
+           (typeof Mp4Muxer !== 'undefined' && typeof Mp4Muxer.Muxer === 'function');
+}
+
+function _toArrayBuffer(buf) {
+    if (buf instanceof ArrayBuffer) return buf;
+    if (ArrayBuffer.isView(buf)) return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    return null;
+}
+function _toUint8Array(d) {
+    if (d instanceof Uint8Array) return d;
+    if (d instanceof ArrayBuffer) return new Uint8Array(d);
+    if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+    return new Uint8Array(d || []);
+}
+function _mapVideoCodec(codec) {
+    const c = String(codec || '').toLowerCase();
+    if (c.indexOf('avc') === 0 || c.indexOf('h264') === 0) return 'avc';
+    if (c.indexOf('hev') === 0 || c.indexOf('hvc') === 0) return 'hevc';
+    return null;
+}
+function _mapAudioCodec(codec) {
+    const c = String(codec || '').toLowerCase();
+    if (c.indexOf('mp4a') === 0 || c.indexOf('aac') === 0) return 'aac';
+    if (c.indexOf('opus') === 0) return 'opus';
+    return null;
+}
+
+function _demuxMp4Track(arrayBuffer, wantVideo) {
+    return new Promise((resolve, reject) => {
+        let info = null;
+        const samples = [];
+        const file = MP4Box.createFile();
+        file.onError = (e) => reject(new Error(String(e)));
+        file.onReady = (i) => { info = i; };
+        file.onSamples = (id, user, ss) => { if (ss) for (const s of ss) samples.push(s); };
+        try {
+            if (arrayBuffer.fileStart === undefined) arrayBuffer.fileStart = 0;
+            file.appendBuffer(arrayBuffer);
+            file.flush();
+        } catch (e) {
+            return reject(new Error('MP4Box解析失败: ' + (e && e.message ? e.message : e)));
+        }
+        if (!info) { reject(new Error('MP4Box未能解析moov')); return; }
+        const track = wantVideo ? (info.videoTracks && info.videoTracks[0]) : (info.audioTracks && info.audioTracks[0]);
+        if (!track) { reject(new Error(wantVideo ? '未找到视频轨' : '未找到音频轨')); return; }
+        let sampleEntry = null;
+        try {
+            const raw = file.getTrackById(track.id);
+            if (raw && raw.mdia && raw.mdia.minf && raw.mdia.minf.stbl &&
+                raw.mdia.minf.stbl.stsd && raw.mdia.minf.stbl.stsd.entries && raw.mdia.minf.stbl.stsd.entries[0]) {
+                sampleEntry = raw.mdia.minf.stbl.stsd.entries[0];
+            }
+        } catch (e) {}
+        track.sampleEntry = sampleEntry;
+        try {
+            file.setExtractionOptions(track.id, null, { nbSamples: 10000000 });
+            file.start();
+        } catch (e) { reject(e); return; }
+        resolve({ track, samples, file });
+    });
+}
+
+async function _remuxDashMp4(videoBuf, audioBuf) {
+    if (!dashLibsAvailable()) throw new Error('缺少 mp4box/mp4-muxer，无法合并（请刷新重试或改用 ffmpeg）');
+    const videoArray = _toArrayBuffer(videoBuf);
+    const audioArray = _toArrayBuffer(audioBuf);
+    if (!videoArray || !audioArray) throw new Error('音视频数据转换失败');
+
+    const v = await _demuxMp4Track(videoArray, true);
+    const a = await _demuxMp4Track(audioArray, false);
+    const vcodec = _mapVideoCodec(v.track.codec);
+    const acodec = _mapAudioCodec(a.track.codec);
+    if (!vcodec || !acodec) throw new Error('不支持的音视频编码: ' + v.track.codec + ' / ' + a.track.codec);
+
+    const width = (v.track.video && v.track.video.width) || 0;
+    const height = (v.track.video && v.track.video.height) || 0;
+    const sampleRate = (a.track.audio && a.track.audio.sample_rate) || 44100;
+    const channels = (a.track.audio && a.track.audio.channel_count) || 2;
+
+    // 提取视频编码配置（avcC/hvcC），mp4-muxer 需要裸配置而非外层 box 头
+    let desc = null;
+    const se = v.track.sampleEntry || (v.samples.length ? v.samples[0].description : null);
+    if (se) {
+        const box = se.avcC || se.hvcC || se.av1C || null;
+        if (box && typeof box.write === 'function' && typeof DataStream !== 'undefined') {
+            try {
+                const ds = new DataStream();
+                if (DataStream.BIG_ENDIAN !== undefined) ds.endianness = DataStream.BIG_ENDIAN;
+                box.write(ds);
+                const u8 = ds.buffer instanceof ArrayBuffer ? new Uint8Array(ds.buffer) : new Uint8Array(ds.buffer.buffer, ds.buffer.byteOffset, ds.buffer.byteLength);
+                if (u8.length > 8) desc = u8.subarray(8);
+                else desc = u8;
+            } catch (e) { desc = null; }
+        }
+    }
+
+    const target = new Mp4Muxer.ArrayBufferTarget();
+    const videoOpts = { codec: vcodec, width: width, height: height };
+    if (desc) videoOpts.decoderConfig = { description: desc };
+    const muxer = new Mp4Muxer.Muxer({
+        target: target,
+        fastStart: 'in-memory',
+        firstTimestampBehavior: 'offset',
+        video: videoOpts,
+        audio: { codec: acodec, sampleRate: sampleRate, numberOfChannels: channels }
+    });
+
+    const videoTimescale = v.track.timescale || 1000;
+    const audioTimescale = a.track.timescale || 1000;
+    const videoSamples = v.samples.slice().sort((x, y) => ((x.dts || 0) - (y.dts || 0)));
+    const audioSamples = a.samples.slice().sort((x, y) => ((x.dts || 0) - (y.dts || 0)));
+
+    let firstV = true;
+    for (const s of videoSamples) {
+        const cts = (s.cts != null ? s.cts : (s.dts != null ? s.dts : 0));
+        const dts = (s.dts != null ? s.dts : (s.cts != null ? s.cts : 0));
+        const ctsUs = Math.max(0, Math.round((cts / videoTimescale) * 1e6));
+        const dtsUs = Math.max(0, Math.round((dts / videoTimescale) * 1e6));
+        const durUs = Math.max(0, Math.round((s.duration / videoTimescale) * 1e6));
+        const ctoUs = Math.round(ctsUs - dtsUs);
+        const meta = (firstV && desc) ? { decoderConfig: { codec: vcodec, description: desc } } : undefined;
+        muxer.addVideoChunkRaw(_toUint8Array(s.data), s.is_sync ? 'key' : 'delta', ctsUs, durUs, meta, ctoUs);
+        firstV = false;
+    }
+    for (const s of audioSamples) {
+        const dts = (s.dts != null ? s.dts : (s.cts != null ? s.cts : 0));
+        const tsUs = Math.max(0, Math.round((dts / audioTimescale) * 1e6));
+        const durUs = Math.max(0, Math.round((s.duration / audioTimescale) * 1e6));
+        muxer.addAudioChunkRaw(_toUint8Array(s.data), 'key', tsUs, durUs);
+    }
+
+    muxer.finalize();
+    if (!target.buffer || target.buffer.byteLength === 0) throw new Error('MP4封装输出为空');
+    return target.buffer;
+}
+
+// 通过 /download 代理把原始 B站直链转成可 fetch 的 ArrayBuffer（绕过防盗链）
+async function fetchAsBuffer(encodedUrl, filename) {
+    const rawUrl = decodeURIComponent(encodedUrl);
+    const proxy = buildDownloadProxyUrl(rawUrl, filename);
+    const resp = await fetch(proxy);
+    if (!resp.ok) throw new Error(`代理下载失败: HTTP ${resp.status}`);
+    return await resp.arrayBuffer();
+}
+
+// 一键合并下载：视频流 + 音频流 → 合并成完整 mp4 → 浏览器保存
+async function downloadDashMerged(encodedV, encodedA, encodedTitle) {
+    const title = decodeURIComponent(encodedTitle || '').replace(/[\\/:*?"<>|]/g, '_') || 'video';
+    if (!encodedV || !encodedA) { showToast('缺少音视频地址，无法合并下载', 'error'); return; }
+    if (!dashLibsAvailable()) { showToast('合并库未加载，请用内置“ffmpeg 合并”命令自行合并', 'warning'); return; }
+
+    const dp = document.getElementById('downloadProgress');
+    if (dp) dp.style.display = '';
+    document.getElementById('dpTitle').textContent = title;
+    document.getElementById('dpPercent').textContent = '下载中';
+    document.getElementById('dpBar').style.width = '0%';
+
+    showToast('正在下载视频流和音频流…', 'info');
+    let videoBuf, audioBuf;
+    try {
+        videoBuf = await fetchAsBuffer(encodedV, title + '_video.m4s');
+        document.getElementById('dpPercent').textContent = '视频流下载完成，正在下载音频流';
+        audioBuf = await fetchAsBuffer(encodedA, title + '_audio.m4s');
+    } catch (e) {
+        if (dp) dp.style.display = 'none';
+        showToast('下载音视频流失败: ' + e.message, 'error');
+        return;
+    }
+
+    showToast('正在合并音视频（浏览器内 remux）…', 'info');
+    document.getElementById('dpPercent').textContent = '正在合并…';
+    try {
+        const merged = await _remuxDashMp4(videoBuf, audioBuf);
+        const blob = new Blob([merged], { type: 'video/mp4' });
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl; a.download = title + '.mp4'; a.rel = 'noopener';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+        document.getElementById('dpPercent').textContent = '完成';
+        showToast(`已合并下载完成: ${title}.mp4 (${(blob.size/1024/1024).toFixed(1)}MB)`, 'success');
+    } catch (e) {
+        if (dp) dp.style.display = 'none';
+        showToast('合并失败: ' + e.message, 'error');
+    }
 }
 
 // 在B站页面内播放视频（嵌入播放器）
