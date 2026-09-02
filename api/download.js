@@ -8,6 +8,8 @@
 export const config = { runtime: 'edge' };
 export const dynamic = 'force-dynamic';
 
+import { readStoredCookie } from '../lib/cookie-store.js';
+
 // ===== 常量 =====
 const UA_POOL = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -284,9 +286,10 @@ export default async function handler(request) {
   }
 
   let filename = url.searchParams.get('name') || 'video.mp4';
-  // 登录 Cookie 优先级：请求参数 cookie > 环境变量 DEFAULT_SESSDATA > 匿名
+  // 登录 Cookie 优先级：请求参数 cookie > KV 里前端保存的最新 Cookie > 环境变量 DEFAULT_SESSDATA > 匿名
   const requestCookie = url.searchParams.get('cookie') || '';
-  const effectiveCookieStr = requestCookie || DEFAULT_COOKIE;
+  const storedCookie = await readStoredCookie();
+  const effectiveCookieStr = requestCookie || storedCookie || DEFAULT_COOKIE;
   // 与 [...path].js proxyFetch 一致：匿名 Cookie 在前，登录 Cookie 在后
   const buildCookieHeader = async () => [await getAnonCookie(), effectiveCookieStr].filter(Boolean).join('; ');
 

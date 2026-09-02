@@ -22,6 +22,8 @@ export const config = {
 // 允许跨域（前端同源时其实用不到，留作本地调试用）
 export const dynamic = 'force-dynamic';
 
+import { readStoredCookie } from '../lib/cookie-store.js';
+
 const MIXIN_KEY_ENC_TAB = [
   46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
   33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
@@ -42,9 +44,11 @@ const DEFAULT_COOKIE = (() => {
   return sess ? 'SESSDATA=' + sess : '';
 })();
 
-// 返回生效的额外 Cookie：优先用请求传来的，否则用内置默认
-function effectiveCookie(requestCookie) {
-  return requestCookie || DEFAULT_COOKIE;
+// 返回生效的额外 Cookie：优先用请求传来的，否则读取 KV 里前端保存的最新 Cookie，最后才用内置默认环境变量
+async function effectiveCookie(requestCookie) {
+  if (requestCookie) return requestCookie;
+  const stored = await readStoredCookie();
+  return stored || DEFAULT_COOKIE;
 }
 
 // 轮换 UA 池，避免单一 UA 被风控标记
@@ -608,6 +612,7 @@ export default async function handler(request) {
       const now = Date.now();
       const anonAge = anonCookieCache.cookie ? Math.floor((now - anonCookieCache.update_time) / 60000) : -1;
       const wbiAge = wbiKeysCache.update_time ? Math.floor((now - wbiKeysCache.update_time) / 60000) : -1;
+      const storedCookie = await readStoredCookie();
       return jsonResponse({
         status: 'ok',
         proxy: 'vercel-edge',
@@ -615,6 +620,7 @@ export default async function handler(request) {
         wbiAge: wbiAge,
         hasAnonCookie: !!anonCookieCache.cookie,
         hasDefaultCookie: !!DEFAULT_COOKIE,
+        hasStoredCookie: !!storedCookie,
         anonCookieAge: anonAge,
         timestamp: now,
       });
@@ -643,7 +649,7 @@ export default async function handler(request) {
     if (path === '/api/api' || path === '/api') {
       const targetUrl = url.searchParams.get('url');
       if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
-      const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
+      const cookie = await effectiveCookie(url.searchParams.get('cookie') || '');
       const qn = parseInt(url.searchParams.get('qn') || '64', 10);
 
       // 传入的是 B站 视频页面链接 → 自动解析为可下载地址（返回 code 0 或业务错误码）
@@ -667,7 +673,7 @@ export default async function handler(request) {
       const mid = url.searchParams.get('mid');
       if (!mid) return jsonResponse({ code: 400, message: '缺少mid参数' }, 400);
 
-      const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
+      const cookie = await effectiveCookie(url.searchParams.get('cookie') || '');
       const params = {
         mid,
         pn: url.searchParams.get('pn') || '1',
@@ -701,7 +707,7 @@ export default async function handler(request) {
       const mid = url.searchParams.get('mid') || '';
       const seasonId = url.searchParams.get('season_id') || '';
       const seriesId = url.searchParams.get('series_id') || '';
-      const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
+      const cookie = await effectiveCookie(url.searchParams.get('cookie') || '');
 
       let apiUrl;
       if (seasonId) {
@@ -740,7 +746,7 @@ export default async function handler(request) {
     if (path === '/api/dynamic' || path === '/dynamic') {
       const id = url.searchParams.get('id');
       if (!id) return jsonResponse({ code: 400, message: '缺少id参数' }, 400);
-      const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
+      const cookie = await effectiveCookie(url.searchParams.get('cookie') || '');
 
       // 动态详情 API 需要 WBI 签名
       const params = { id, platform: 'web', web_location: '333.999' };
@@ -787,7 +793,7 @@ export default async function handler(request) {
     if (path === '/api/download' || path === '/download') {
       const targetUrl = url.searchParams.get('url');
       if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
-      const cookie = effectiveCookie(url.searchParams.get('cookie') || '');
+      const cookie = await effectiveCookie(url.searchParams.get('cookie') || '');
       const filename = url.searchParams.get('name') || 'video.mp4';
       let resolvedUrl = request.headers.get('X-Resolved-Url'); // 前端提供的已解析 CDN URL
 

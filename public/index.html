@@ -581,6 +581,7 @@ function applyCookie() {
         showToast('Cookie已应用', 'success');
         localStorage.setItem('bilibili_cookie', cookieString);
     } else { showToast('未输入Cookie', 'warning'); }
+    syncCookieToServer(cookieString);
 }
 
 function clearCookie() {
@@ -590,6 +591,29 @@ function clearCookie() {
     localStorage.removeItem('bilibili_cookie');
     updateCookieStatus();
     showToast('Cookie已清除', 'info');
+    syncCookieToServer('');
+}
+
+// 将最新 Cookie 同步到服务器 KV，使 /api/download、/api/api 等接口自动使用最新 Cookie
+// 可选：若配置了 SAVE_COOKIE_TOKEN，可在下方常量填入对应 token
+const SAVE_COOKIE_TOKEN = ''; // 如需鉴权，填入与 Vercel 环境变量 SAVE_COOKIE_TOKEN 相同的值
+function syncCookieToServer(cookie) {
+    const url = '/api/savecookie';
+    const opts = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cookie: cookie }),
+    };
+    if (SAVE_COOKIE_TOKEN) {
+        opts.headers['Authorization'] = 'Bearer ' + SAVE_COOKIE_TOKEN;
+        opts.headers['X-Save-Token'] = SAVE_COOKIE_TOKEN;
+    }
+    fetch(url, opts)
+        .then(res => res.json())
+        .then(d => {
+            if (d.code !== 0) console.warn('[savecookie]', d.message);
+        })
+        .catch(err => console.warn('[savecookie] 同步失败', err.message));
 }
 
 function testCookie() {
@@ -624,6 +648,7 @@ function loadSavedCookie() {
         if (match) document.getElementById('sessdataInput').value = match[1];
         document.getElementById('fullCookieInput').value = saved;
         updateCookieStatus();
+        syncCookieToServer(saved);
     }
 }
 
