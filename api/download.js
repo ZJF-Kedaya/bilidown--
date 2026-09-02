@@ -19,22 +19,6 @@ const UA_POOL = [
 ];
 const BROWSER_UA = UA_POOL[Math.floor(Math.random() * UA_POOL.length)];
 
-const API_HEADERS = {
-  'User-Agent': BROWSER_UA,
-  'Accept': 'application/json, text/plain, */*',
-  'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-  'Referer': 'https://www.bilibili.com/',
-  'Origin': 'https://www.bilibili.com',
-  'DNT': '1',
-  'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="8"',
-  'sec-ch-ua-mobile': '?0',
-  'sec-ch-ua-platform': '"Windows"',
-  'sec-fetch-dest': 'empty',
-  'sec-fetch-mode': 'cors',
-  'sec-fetch-site': 'same-site',
-  'X-Bili-Ftrace-Id': generateRandom(16, '0123456789abcdef') + ':0',
-};
-
 // 默认登录 Cookie：通过 Vercel 环境变量 DEFAULT_SESSDATA 配置（与 [...path].js 同步）
 const DEFAULT_COOKIE = (() => {
   const sess = (typeof process !== 'undefined' && process.env.DEFAULT_SESSDATA) || '';
@@ -205,37 +189,29 @@ async function getAnonCookie() {
   return anonCookiePromise;
 }
 
-// 带 Cookie 阶梯重试的 fetch：
-// 1) 匿名Cookie + 登录Cookie（用户cookie > 环境变量 DEFAULT_SESSDATA）
-// 2) 412 → 刷新匿名Cookie + 登录Cookie 重试
-// 3) 412 → 去掉登录Cookie（可能环境变量里的 SESSDATA 已失效反而触发封禁），仅用匿名Cookie
-async function fetchApiWithLadder(url, effectiveCookieStr) {
-  const buildHeaders = async (includeLogin) => {
+// 解析 API 请求（view/playurl）：带匿名+登录 Cookie（仅解析需要），遇 412 刷新匿名重试一次
+async function fetchApi(url, loginCookieStr) {
+  const buildHeaders = async () => {
     const cookieParts = [await getAnonCookie()];
-    if (includeLogin && effectiveCookieStr) cookieParts.push(effectiveCookieStr);
-    return { ...API_HEADERS, 'Cookie': cookieParts.filter(Boolean).join('; ') };
+    if (loginCookieStr) cookieParts.push(loginCookieStr);
+    return {
+      'User-Agent': BROWSER_UA,
+      'Referer': 'https://www.bilibili.com/',
+      'Accept': 'application/json, text/plain, */*',
+      'Cookie': cookieParts.filter(Boolean).join('; '),
+    };
   };
 
-  let headers = await buildHeaders(true);
-  let resp = await fetch(url, { headers: safeHeaders(headers), redirect: 'follow' });
-
+  let resp = await fetch(url, { headers: safeHeaders(await buildHeaders()), redirect: 'follow' });
   if (resp.status === 412) {
     anonCookieCache = { cookie: '', update_time: 0 };
     await new Promise(r => setTimeout(r, 300));
-    headers = await buildHeaders(true);
-    resp = await fetch(url, { headers: safeHeaders(headers), redirect: 'follow' });
+    resp = await fetch(url, { headers: safeHeaders(await buildHeaders()), redirect: 'follow' });
   }
-
-  if (resp.status === 412 && effectiveCookieStr) {
-    await new Promise(r => setTimeout(r, 300));
-    headers = await buildHeaders(false);
-    resp = await fetch(url, { headers: safeHeaders(headers), redirect: 'follow' });
-  }
-
   return resp;
 }
 
-// 手动跟随重定向（每跳带 Referer）
+// 手动跟随重定向（针对 b23.tv 短链解析，只走需要的跳转）
 async function fetchWithRedirects(startUrl, headers) {
   let currentUrl = startUrl;
   let r = await fetch(currentUrl, { headers: safeHeaders(headers), redirect: 'manual' });
@@ -286,19 +262,18 @@ export default async function handler(request) {
   }
 
   let filename = url.searchParams.get('name') || 'video.mp4';
-  // 登录 Cookie 优先级：请求参数 cookie > KV 里前端保存的最新 Cookie > 环境变量 DEFAULT_SESSDATA > 匿名
+  // 登录 Cookie 优先级：请求参数 cookie > KV 里前端保存的最新 Cookie > 环境变量 DEFAULT_SESSDATA
+  // 该 Cookie 仅用于解析（view/playurl），下载 CDN 直链不携带任何 Cookie
   const requestCookie = url.searchParams.get('cookie') || '';
   const storedCookie = await readStoredCookie();
   const effectiveCookieStr = requestCookie || storedCookie || DEFAULT_COOKIE;
-  // 与 [...path].js proxyFetch 一致：匿名 Cookie 在前，登录 Cookie 在后
-  const buildCookieHeader = async () => [await getAnonCookie(), effectiveCookieStr].filter(Boolean).join('; ');
 
   try {
     // 如果是 B站视频页面，自动解析为直链
     if (isVideoPageUrl(targetUrl)) {
       // 短链先跟随重定向拿到最终页面 URL
       if (targetUrl.includes('b23.tv')) {
-        const finalUrl = await fetchWithRedirects(targetUrl, { ...API_HEADERS, 'Cookie': await buildCookieHeader() });
+        const finalUrl = await fetchWithRedirects(targetUrl, { 'User-Agent': BROWSER_UA, 'Referer': 'https://www.bilibili.com/' });
         targetUrl = finalUrl.url || targetUrl;
       }
       const bvid = extractBvid(targetUrl);
@@ -309,9 +284,9 @@ export default async function handler(request) {
         );
       }
 
-      // 1. 获取 cid
+      // 1. 获取 cid（仅解析带 Cookie，下载不带）
       const viewUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`;
-      const viewResp = await fetchApiWithLadder(viewUrl, effectiveCookieStr);
+      const viewResp = await fetchApi(viewUrl, effectiveCookieStr);
       const viewData = await parseJsonOrNull(viewResp);
       if (!viewData || viewData.code !== 0 || !viewData.data) {
         return new Response(
@@ -327,9 +302,9 @@ export default async function handler(request) {
       const cid = info.cid;
       filename = (info.title || 'video').replace(/[\\/:*?"<>|]/g, '_') + '.mp4';
 
-      // 2. 获取直链
+      // 2. 获取直链（仅解析带 Cookie，下载不带）
       const playUrl = `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=64&fnval=1&platform=pc`;
-      const playResp = await fetchApiWithLadder(playUrl, effectiveCookieStr);
+      const playResp = await fetchApi(playUrl, effectiveCookieStr);
       const playData = await parseJsonOrNull(playResp);
       if (!playData || playData.code !== 0 || !playData.data || !playData.data.durl || playData.data.durl.length === 0) {
         return new Response(
@@ -344,15 +319,16 @@ export default async function handler(request) {
       targetUrl = playData.data.durl[0].url;
     }
 
-    // 最终下载 CDN 直链
+    // 最终下载 CDN 直链：
+    // 关键：下载请求只带 UA + Referer，去掉 Cookie/Origin/全套浏览器头。
+    // B站 CDN 对带完整登录 Cookie 与 Origin 的下载请求可能走登录/受限链路导致限速，
+    // 而同 URL 的匿名直链下载才是满速。直链本身已携带鉴权参数，下载无需 Cookie。
     const downloadHeaders = {
-      ...API_HEADERS,
+      'User-Agent': BROWSER_UA,
       'Referer': 'https://www.bilibili.com/',
-      'Origin': 'https://www.bilibili.com',
-      'Cookie': await buildCookieHeader(),
     };
 
-    const resp = await fetchWithRedirects(targetUrl, downloadHeaders);
+    const resp = await fetch(targetUrl, { headers: safeHeaders(downloadHeaders), redirect: 'follow' });
     if (!resp.ok) {
       return new Response(
         JSON.stringify({ code: resp.status, message: `下载失败: ${resp.statusText}` }),
