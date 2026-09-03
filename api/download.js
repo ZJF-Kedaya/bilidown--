@@ -301,6 +301,7 @@ export default async function handler(request) {
       const info = viewData.data;
       const cid = info.cid;
       filename = (info.title || 'video').replace(/[\\/:*?"<>|]/g, '_') + '.mp4';
+      filename = filename.replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}\u{FE0E}]/gu, '');
 
       // 2. 获取直链（仅解析带 Cookie，下载不带）
       const playUrl = `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=64&fnval=1&platform=pc`;
