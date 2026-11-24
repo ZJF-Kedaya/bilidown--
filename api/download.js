@@ -263,9 +263,9 @@ export default async function handler(request) {
 
   let filename = url.searchParams.get('name') || 'video.mp4';
   let durlSize = 0;
-  // 登录 Cookie 优先级：请求参数 cookie > KV 里前端保存的最新 Cookie > 环境变量 DEFAULT_SESSDATA
+  // 登录 Cookie 优先级：请求参数 cookie > X-Bili-Cookie 请求头（外部监控程序用，避免Cookie进URL日志） > KV 里前端保存的最新 Cookie > 环境变量 DEFAULT_SESSDATA
   // 该 Cookie 仅用于解析（view/playurl），下载 CDN 直链不携带任何 Cookie
-  const requestCookie = url.searchParams.get('cookie') || '';
+  const requestCookie = url.searchParams.get('cookie') || request.headers.get('x-bili-cookie') || '';
   const storedCookie = await readStoredCookie();
   const effectiveCookieStr = requestCookie || storedCookie || DEFAULT_COOKIE;
 
