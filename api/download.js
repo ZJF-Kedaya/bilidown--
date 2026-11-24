@@ -367,6 +367,21 @@ export default async function handler(request) {
     }
     if (contentRange) responseHeaders['Content-Range'] = contentRange;
 
+    // 小文件整体缓冲后以固定长度响应返回：固定长度 Response 的 Content-Length 会被 Vercel 保留，
+    // 浏览器即可正常显示下载总大小与进度。大文件仍走流式（Edge 内存上限 128MB，不能全量缓冲）。
+    // HEAD 请求不缓冲（没有响应体，缓冲纯属浪费）。
+    const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+    if (
+      request.method !== 'HEAD' &&
+      contentLength &&
+      Number(contentLength) <= MAX_BUFFER_BYTES
+    ) {
+      const buf = await resp.arrayBuffer();
+      responseHeaders['Content-Length'] = String(buf.byteLength);
+      responseHeaders['X-Content-Length'] = String(buf.byteLength);
+      return new Response(buf, { status: resp.status, headers: responseHeaders });
+    }
+
     return new Response(resp.body, { status: resp.status, headers: responseHeaders });
   } catch (err) {
     return new Response(
