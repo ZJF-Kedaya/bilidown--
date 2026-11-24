@@ -425,12 +425,12 @@ function jsonResponse(data, status = 200) {
 
 async function handleApiProxy(targetUrl, cookie) {
   let fetchUrl = targetUrl;
-  const needWbi = targetUrl.includes('/x/space/wbi/') || targetUrl.includes('/x/wbi/');
+  const targetUrlObj0 = new URL(targetUrl);
+  const needWbi = (targetUrl.includes('/x/space/wbi/') || targetUrl.includes('/x/wbi/')) && !targetUrlObj0.searchParams.has('w_rid');
   if (needWbi) {
     try {
-      const targetUrlObj = new URL(targetUrl);
-      const params = Object.fromEntries(targetUrlObj.searchParams.entries());
-      fetchUrl = await signUrl(targetUrlObj.origin + targetUrlObj.pathname, params, cookie);
+      const params = Object.fromEntries(targetUrlObj0.searchParams.entries());
+      fetchUrl = await signUrl(targetUrlObj0.origin + targetUrlObj0.pathname, params, cookie);
     } catch (e) {
       console.error('WBI签名失败:', e.message);
     }
