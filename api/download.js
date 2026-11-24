@@ -43,7 +43,7 @@ function corsHeaders() {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Range, Origin',
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Disposition, Content-Range, Accept-Ranges',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Disposition, Content-Range, Accept-Ranges, X-Content-Length',
   };
 }
 
@@ -262,6 +262,7 @@ export default async function handler(request) {
   }
 
   let filename = url.searchParams.get('name') || 'video.mp4';
+  let durlSize = 0;
   // 登录 Cookie 优先级：请求参数 cookie > KV 里前端保存的最新 Cookie > 环境变量 DEFAULT_SESSDATA
   // 该 Cookie 仅用于解析（view/playurl），下载 CDN 直链不携带任何 Cookie
   const requestCookie = url.searchParams.get('cookie') || '';
@@ -318,6 +319,8 @@ export default async function handler(request) {
         );
       }
       targetUrl = playData.data.durl[0].url;
+      // B站 playurl 的 durl 自带文件大小，作为上游 Content-Length 缺失时的兜底
+      durlSize = Number(playData.data.durl[0].size) || 0;
     }
 
     // 最终下载 CDN 直链：
@@ -337,7 +340,7 @@ export default async function handler(request) {
       );
     }
 
-    const contentLength = resp.headers.get('Content-Length');
+    const contentLength = resp.headers.get('Content-Length') || (durlSize > 0 ? String(durlSize) : '');
     const contentType = resp.headers.get('Content-Type') || 'video/mp4';
     const contentRange = resp.headers.get('Content-Range');
 
@@ -355,7 +358,13 @@ export default async function handler(request) {
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'public, max-age=3600',
     };
-    if (contentLength) responseHeaders['Content-Length'] = contentLength;
+    if (contentLength) {
+      responseHeaders['Content-Length'] = contentLength;
+      // 关键：Vercel Edge 对流式响应（chunked 传输）会剥离 Content-Length，浏览器因此看不到视频总大小。
+      // 平台不会剥离自定义头，所以用 X-Content-Length 把真实大小带出去：
+      // 下载器/监控程序读取该头即可做进度显示与完整性校验。
+      responseHeaders['X-Content-Length'] = contentLength;
+    }
     if (contentRange) responseHeaders['Content-Range'] = contentRange;
 
     return new Response(resp.body, { status: resp.status, headers: responseHeaders });
