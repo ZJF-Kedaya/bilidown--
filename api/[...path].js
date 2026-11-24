@@ -649,7 +649,8 @@ export default async function handler(request) {
     if (path === '/api/api' || path === '/api') {
       const targetUrl = url.searchParams.get('url');
       if (!targetUrl) return jsonResponse({ code: 400, message: '缺少url参数' }, 400);
-      const cookie = await effectiveCookie(url.searchParams.get('cookie') || '');
+      // Cookie 优先级：URL参数 > X-Bili-Cookie 请求头（外部监控程序用，避免Cookie出现在URL里被日志记录） > KV存储 > 环境变量
+      const cookie = await effectiveCookie(url.searchParams.get('cookie') || request.headers.get('x-bili-cookie') || '');
       const qn = parseInt(url.searchParams.get('qn') || '64', 10);
 
       // 传入的是 B站 视频页面链接 → 自动解析为可下载地址（返回 code 0 或业务错误码）
