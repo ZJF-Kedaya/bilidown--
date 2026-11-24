@@ -22,7 +22,7 @@ export const config = {
 // 允许跨域（前端同源时其实用不到，留作本地调试用）
 export const dynamic = 'force-dynamic';
 
-import { readStoredCookie } from '../lib/cookie-store.js';
+import { readStoredCookie, kv } from '../lib/cookie-store.js';
 
 const MIXIN_KEY_ENC_TAB = [
   46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
@@ -643,6 +643,34 @@ export default async function handler(request) {
         message: allOk ? 'Vercel Edge IP 可正常访问B站' : 'Vercel Edge IP 被B站风控拦截，可稍后重试或换 Region 部署',
         tests,
         timestamp: Date.now(),
+      });
+    }
+
+    if (path === '/api/cookie-status') {
+      // 诊断 Cookie 持久化链路：KV 是否可用、是否已保存 Cookie（只返回长度与是否含 SESSDATA，不泄露内容）
+      let kvAvailable = false;
+      let cookieLength = 0;
+      let hasSessdata = false;
+      try {
+        const stored = await kv.get('bilibili_latest_cookie');
+        kvAvailable = true;
+        if (typeof stored === 'string') {
+          cookieLength = stored.length;
+          hasSessdata = /SESSDATA=/.test(stored);
+        }
+      } catch (e) {
+        kvAvailable = false;
+      }
+      const hasDefaultSessdata = !!(typeof process !== 'undefined' && process.env.DEFAULT_SESSDATA);
+      return jsonResponse({
+        code: 0,
+        kvAvailable: kvAvailable,
+        storedCookieLength: cookieLength,
+        storedHasSessdata: hasSessdata,
+        hasDefaultSessdata: hasDefaultSessdata,
+        message: kvAvailable
+          ? (cookieLength > 0 ? ('KV可用，已保存Cookie（长度' + cookieLength + (hasSessdata ? '，含SESSDATA' : '，不含SESSDATA') + '）') : 'KV可用，但尚未保存Cookie：请在前端页面临时应用一次Cookie')
+          : 'Vercel KV不可用：请到 Vercel 项目 Storage 里创建并绑定 KV（Upstash），否则前端Cookie无法同步、/api/download 只能依赖URL参数或DEFAULT_SESSDATA',
       });
     }
 

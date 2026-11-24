@@ -615,9 +615,17 @@ function syncCookieToServer(cookie) {
     fetch(url, opts)
         .then(res => res.json())
         .then(d => {
-            if (d.code !== 0) console.warn('[savecookie]', d.message);
+            if (d.code !== 0) {
+                console.warn('[savecookie]', d.message);
+                showToast('Cookie同步到服务器失败：' + (d.message || '未知错误') + '。KV不可用时，/api/download 将无法使用最新Cookie', 'error');
+            } else if (cookie) {
+                showToast('Cookie已同步到服务器KV', 'success');
+            }
         })
-        .catch(err => console.warn('[savecookie] 同步失败', err.message));
+        .catch(err => {
+            console.warn('[savecookie] 同步失败', err.message);
+            showToast('Cookie同步到服务器失败：' + err.message, 'error');
+        });
 }
 
 function testCookie() {

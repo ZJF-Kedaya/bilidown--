@@ -265,9 +265,14 @@ export default async function handler(request) {
   let durlSize = 0;
   // 登录 Cookie 优先级：请求参数 cookie > X-Bili-Cookie 请求头（外部监控程序用，避免Cookie进URL日志） > KV 里前端保存的最新 Cookie > 环境变量 DEFAULT_SESSDATA
   // 该 Cookie 仅用于解析（view/playurl），下载 CDN 直链不携带任何 Cookie
-  const requestCookie = url.searchParams.get('cookie') || request.headers.get('x-bili-cookie') || '';
+  const queryCookie = url.searchParams.get('cookie') || '';
+  const headerCookie = request.headers.get('x-bili-cookie') || '';
+  const requestCookie = queryCookie || headerCookie;
   const storedCookie = await readStoredCookie();
   const effectiveCookieStr = requestCookie || storedCookie || DEFAULT_COOKIE;
+  // Cookie 来源诊断：412 风控时能立刻看出是哪一环断了（KV没配置/没保存/匿名请求）
+  const cookieSource = queryCookie ? 'URL参数' : (headerCookie ? 'X-Bili-Cookie请求头' : (storedCookie ? 'Vercel KV(前端保存)' : (DEFAULT_COOKIE ? '环境变量DEFAULT_SESSDATA' : '匿名(无任何登录Cookie)')));
+  const cookieHint = '（当前Cookie来源：' + cookieSource + '，Cookie长度' + effectiveCookieStr.length + '）';
 
   try {
     // 如果是 B站视频页面，自动解析为直链
@@ -293,7 +298,7 @@ export default async function handler(request) {
         return new Response(
           JSON.stringify({
             code: -1,
-            message: '获取视频信息失败（B站返回了风控页面）。请通过 cookie 参数传入有效登录 Cookie，例如 &cookie=SESSDATA%3Dxxx（值需URL编码），或在 Vercel 环境变量更新 DEFAULT_SESSDATA',
+            message: '获取视频信息失败（B站返回了风控页面）。请通过 cookie 参数传入有效登录 Cookie，例如 &cookie=SESSDATA%3Dxxx（值需URL编码），或在 Vercel 环境变量更新 DEFAULT_SESSDATA' + cookieHint,
             httpStatus: viewResp.status,
           }),
           { status: 400, headers: { ...corsHeaders(), 'Content-Type': 'application/json' } }
@@ -312,7 +317,7 @@ export default async function handler(request) {
         return new Response(
           JSON.stringify({
             code: -1,
-            message: '获取播放地址失败（B站返回了风控页面）。请通过 cookie 参数传入有效登录 Cookie，例如 &cookie=SESSDATA%3Dxxx（值需URL编码），或在 Vercel 环境变量更新 DEFAULT_SESSDATA',
+            message: '获取播放地址失败（B站返回了风控页面）。请通过 cookie 参数传入有效登录 Cookie，例如 &cookie=SESSDATA%3Dxxx（值需URL编码），或在 Vercel 环境变量更新 DEFAULT_SESSDATA' + cookieHint,
             httpStatus: playResp.status,
           }),
           { status: 400, headers: { ...corsHeaders(), 'Content-Type': 'application/json' } }
