@@ -263,12 +263,21 @@ export default async function handler(request) {
 
   let filename = url.searchParams.get('name') || 'video.mp4';
   let durlSize = 0;
+  // 响应模式：
+  //   buffer(默认) - ≤64MB 全量缓冲后返回，浏览器可见总大小，代价是首字节延迟=上游整个下载时间
+  //   stream       - 纯流式透传，立即开始，但 Vercel 会剥离 Content-Length（浏览器看不到总大小，
+  //                  程序仍可读 X-Content-Length）
+  //   redirect     - 解析出 CDN 直链后 302 跳转，客户端直连 CDN（满速、原生 Content-Length、支持
+  //                  Range）。注意：CDN 不带 Content-Disposition，浏览器导航可能内联播放而非下载，
+  //                  适合 OpenList/IDM 等下载器
+  const mode = (url.searchParams.get('mode') || 'buffer').toLowerCase();
   // 登录 Cookie 优先级：请求参数 cookie > X-Bili-Cookie 请求头（外部监控程序用，避免Cookie进URL日志） > KV 里前端保存的最新 Cookie > 环境变量 DEFAULT_SESSDATA
   // 该 Cookie 仅用于解析（view/playurl），下载 CDN 直链不携带任何 Cookie
   const queryCookie = url.searchParams.get('cookie') || '';
   const headerCookie = request.headers.get('x-bili-cookie') || '';
   const requestCookie = queryCookie || headerCookie;
-  const storedCookie = await readStoredCookie();
+  // 请求已自带 Cookie 时跳过 KV 读取，省一次 Upstash 往返（~100-500ms）
+  const storedCookie = requestCookie ? '' : await readStoredCookie();
   const effectiveCookieStr = requestCookie || storedCookie || DEFAULT_COOKIE;
   // Cookie 来源诊断：412 风控时能立刻看出是哪一环断了（KV没配置/没保存/匿名请求）
   const cookieSource = queryCookie ? 'URL参数' : (headerCookie ? 'X-Bili-Cookie请求头' : (storedCookie ? 'Vercel KV(前端保存)' : (DEFAULT_COOKIE ? '环境变量DEFAULT_SESSDATA' : '匿名(无任何登录Cookie)')));
@@ -328,6 +337,15 @@ export default async function handler(request) {
       durlSize = Number(playData.data.durl[0].size) || 0;
     }
 
+    // 直链跳转模式：拿到 CDN 直链（或用户传入的直链）后直接 302，零流量经过本服务。
+    // 实测B站CDN直链（upos）直接 200 返回，带原生 Content-Length 与 Accept-Ranges(bytes 206)。
+    if (mode === 'redirect') {
+      return new Response(null, {
+        status: 302,
+        headers: { ...corsHeaders(), 'Location': targetUrl },
+      });
+    }
+
     // 最终下载 CDN 直链：
     // 关键：下载请求只带 UA + Referer，去掉 Cookie/Origin/全套浏览器头。
     // B站 CDN 对带完整登录 Cookie 与 Origin 的下载请求可能走登录/受限链路导致限速，
@@ -377,6 +395,7 @@ export default async function handler(request) {
     // HEAD 请求不缓冲（没有响应体，缓冲纯属浪费）。
     const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
     if (
+      mode !== 'stream' &&
       request.method !== 'HEAD' &&
       contentLength &&
       Number(contentLength) <= MAX_BUFFER_BYTES

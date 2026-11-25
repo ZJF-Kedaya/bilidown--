@@ -380,6 +380,14 @@
                 <label>Worker URL：</label>
                 <input type="text" id="cfWorkerUrl" placeholder="https://your-worker.workers.dev" style="width:220px;font-size:12px;">
             </div>
+            <div class="setting-item">
+                <label>服务器模式：</label>
+                <select id="serverMode" onchange="onServerModeChange()" title="默认缓冲：浏览器可见总大小；流式：立即开始但无总大小；直链跳转：最快，适合OpenList/IDM">
+                    <option value="buffer" selected>缓冲(默认·显示总大小)</option>
+                    <option value="stream">流式(立即开始)</option>
+                    <option value="redirect">直链跳转(最快·下载器用)</option>
+                </select>
+            </div>
         </div>
     </div>
 
@@ -660,7 +668,8 @@ function loadSavedCookie() {
         if (match) document.getElementById('sessdataInput').value = match[1];
         document.getElementById('fullCookieInput').value = saved;
         updateCookieStatus();
-        syncCookieToServer(saved);
+        // 仅本地恢复，不自动同步服务器：避免每次刷新页面都白打一次 KV 请求。
+        // 需要同步时点击「应用Cookie」按钮即可（applyCookies 内会调 syncCookieToServer）。
     }
 }
 
@@ -1752,10 +1761,21 @@ function retryParse(videoId) {
 
 function getDownloadMode() { return document.getElementById('downloadMode').value; }
 
+// 服务器响应模式：buffer(默认缓冲)/stream(流式)/redirect(302直链)，持久化到 localStorage
+function getServerMode() { return document.getElementById('serverMode').value; }
+function onServerModeChange() { localStorage.setItem('bili_server_mode', getServerMode()); }
+function loadServerMode() {
+    const saved = localStorage.getItem('bili_server_mode');
+    if (saved && ['buffer', 'stream', 'redirect'].includes(saved)) {
+        document.getElementById('serverMode').value = saved;
+    }
+}
+
 // 构建下载 URL（通过后端转发，自动加 Referer）
 function buildDownloadProxyUrl(videoUrl, filename) {
     let url = `${backendPath('/download')}?url=${encodeURIComponent(videoUrl)}&name=${encodeURIComponent(filename)}`;
     if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
+    if (getServerMode() !== 'buffer') url += `&mode=${getServerMode()}`;
     return url;
 }
 
@@ -1770,6 +1790,7 @@ function absBackendPath(path) {
 function buildAbsDownloadProxyUrl(videoUrl, filename) {
     let url = `${absBackendPath('/download')}?url=${encodeURIComponent(videoUrl)}&name=${encodeURIComponent(filename)}`;
     if (cookieString) url += `&cookie=${encodeURIComponent(cookieString)}`;
+    if (getServerMode() !== 'buffer') url += `&mode=${getServerMode()}`;
     return url;
 }
 
@@ -1834,8 +1855,9 @@ async function browserDownload(videoUrl, filename, progressEl) {
 
     try {
         const resp = await fetch(downloadUrl);
-        if (!resp.ok) throw new Error(`下载请求失败: HTTP ${resp.status}`);
-        const total = parseInt(resp.headers.get('Content-Length') || '0', 10);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        // 流式模式下 Vercel 剥离 Content-Length，用自定义 X-Content-Length 兜底（后端已通过 CORS 暴露）
+        const total = parseInt(resp.headers.get('Content-Length') || resp.headers.get('X-Content-Length') || '0', 10);
 
         // FSA 可用则顺序写入磁盘（低内存）；否则缓冲为 Blob
         let writable = null;
@@ -2227,6 +2249,7 @@ function clearAll() {
 // ==================== 初始化 ====================
 document.getElementById('urlInput').addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') startParse(); });
 window.addEventListener('load', async () => {
+    loadServerMode();
     loadSavedCookie();
     if (!cookieString) {
         document.getElementById('cookiePanelBody').classList.add('open');
