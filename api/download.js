@@ -263,6 +263,7 @@ export default async function handler(request) {
 
   let filename = url.searchParams.get('name') || 'video.mp4';
   let durlSize = 0;
+  let playUrlCtx = null; // 视频页解析出的 playurl 地址（CDN 403 时重新解析换新直链用）
   // 响应模式：
   //   buffer(默认) - ≤64MB 全量缓冲后返回，浏览器可见总大小，代价是首字节延迟=上游整个下载时间
   //   stream       - 纯流式透传，立即开始，但 Vercel 会剥离 Content-Length（浏览器看不到总大小，
@@ -320,6 +321,7 @@ export default async function handler(request) {
 
       // 2. 获取直链（仅解析带 Cookie，下载不带）
       const playUrl = `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=64&fnval=1&platform=pc`;
+      playUrlCtx = playUrl;
       const playResp = await fetchApi(playUrl, effectiveCookieStr);
       const playData = await parseJsonOrNull(playResp);
       if (!playData || playData.code !== 0 || !playData.data || !playData.data.durl || playData.data.durl.length === 0) {
@@ -355,7 +357,20 @@ export default async function handler(request) {
       'Referer': 'https://www.bilibili.com/',
     };
 
-    const resp = await fetch(targetUrl, { headers: safeHeaders(downloadHeaders), redirect: 'follow' });
+    let resp = await fetch(targetUrl, { headers: safeHeaders(downloadHeaders), redirect: 'follow' });
+    // B站 CDN 偶发 403/5xx（Vercel 出口 IP 被部分 upos 节点风控拒绝）：
+    // 重新解析 playurl 换一条新直链再试一次（每次 durl 可能分配不同的 CDN 主机）。
+    if (!resp.ok && (resp.status === 403 || resp.status >= 500) && playUrlCtx) {
+      try { if (resp.body) await resp.body.cancel(); } catch (eC) {}
+      const playResp2 = await fetchApi(playUrlCtx, effectiveCookieStr);
+      const playData2 = await parseJsonOrNull(playResp2);
+      const durl2 = playData2 && playData2.code === 0 && playData2.data && playData2.data.durl && playData2.data.durl[0];
+      if (durl2 && durl2.url && durl2.url !== targetUrl) {
+        targetUrl = durl2.url;
+        durlSize = Number(durl2.size) || durlSize;
+        resp = await fetch(targetUrl, { headers: safeHeaders(downloadHeaders), redirect: 'follow' });
+      }
+    }
     if (!resp.ok) {
       return new Response(
         JSON.stringify({ code: resp.status, message: `下载失败: ${resp.statusText}` }),
